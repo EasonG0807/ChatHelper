@@ -73,10 +73,11 @@ public class ResourceDownloadTool implements ReactTool {
             }
 
             Path workspace = context.workspaceRoot();
-            Path target = workspaceService.resolveInside(workspace, fileName);
+            Path target = workspaceService.createArtifactPath(workspace, fileName);
             Files.createDirectories(target.getParent());
             Files.write(target, bytes);
-            return ToolExecutionResult.success("Downloaded " + bytes.length + " bytes to " + target, target.toString());
+            return ToolExecutionResult.success(
+                    "Downloaded " + bytes.length + " bytes to " + target.getFileName(), target.toString());
         } catch (Exception ex) {
             return ToolExecutionResult.failure("Resource download failed: " + ex.getMessage());
         }

@@ -62,8 +62,6 @@ public class ToolCallbackReactTool implements ReactTool {
         values.put("userId", context.userId());
         values.put("sessionId", context.sessionId());
         values.put("messageId", context.messageId());
-        values.put("skillId", context.skillId());
-        values.put("skillName", context.skillName());
         values.put("workspaceRoot", context.workspaceRoot() == null ? null : context.workspaceRoot().toString());
         return values;
     }

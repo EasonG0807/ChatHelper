@@ -28,8 +28,6 @@ public class AgentSession {
 
     private String mode = "general";
 
-    private Long skillId;
-
     @Enumerated(EnumType.STRING)
     private AgentSessionStatus status = AgentSessionStatus.ACTIVE;
 

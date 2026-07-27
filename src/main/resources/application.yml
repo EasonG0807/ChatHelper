@@ -71,23 +71,42 @@ agent:
   admin:
     user-ids: ${AGENT_ADMIN_USER_IDS:1}
   history:
-    recent-message-limit: ${AGENT_HISTORY_RECENT_MESSAGE_LIMIT:12}
     summary-max-chars: ${AGENT_HISTORY_SUMMARY_MAX_CHARS:3000}
+    # Only summarize after enough historical context accumulates.
+    summary-trigger-message-count: ${AGENT_HISTORY_SUMMARY_TRIGGER_MESSAGE_COUNT:6}
+    summary-trigger-tokens: ${AGENT_HISTORY_SUMMARY_TRIGGER_TOKENS:1500}
+  context:
+    # Approximate budget used when selecting messages and auxiliary context.
+    # The context manager uses a conservative character-to-token estimate.
+    max-tokens: ${AGENT_CONTEXT_MAX_TOKENS:6000}
+    recent-message-tokens: ${AGENT_CONTEXT_RECENT_MESSAGE_TOKENS:2200}
+    relevant-message-tokens: ${AGENT_CONTEXT_RELEVANT_MESSAGE_TOKENS:900}
+    relevant-execution-tokens: ${AGENT_CONTEXT_RELEVANT_EXECUTION_TOKENS:1000}
+    memory-tokens: ${AGENT_CONTEXT_MEMORY_TOKENS:1000}
+  memory:
+    enabled: ${AGENT_MEMORY_ENABLED:true}
+    max-items-per-run: ${AGENT_MEMORY_MAX_ITEMS_PER_RUN:5}
+    max-retrieved-items: ${AGENT_MEMORY_MAX_RETRIEVED_ITEMS:6}
   deepseek:
     api-key: ${DEEPSEEK_API_KEY:}
     base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
-    model: ${DEEPSEEK_CHAT_MODEL:deepseek-chat}
+    # DeepSeek retired the old "deepseek-chat" name; the API now accepts
+    # deepseek-v4-flash (fast/cheap) or deepseek-v4-pro (stronger).
+    model: ${DEEPSEEK_CHAT_MODEL:deepseek-v4-flash}
     temperature: ${DEEPSEEK_TEMPERATURE:0.4}
     max-tokens: ${DEEPSEEK_MAX_TOKENS:2048}
   react:
     max-steps: ${AGENT_REACT_MAX_STEPS:8}
-    workspace-root: ${AGENT_REACT_WORKSPACE_ROOT:uploads/agent-workspace}
+    # Keep private Agent outputs outside the publicly mapped uploads tree.
+    workspace-root: ${AGENT_REACT_WORKSPACE_ROOT:data/agent-workspace}
     web-search:
       api-key: ${AGENT_REACT_WEB_SEARCH_API_KEY:}
       endpoint: ${AGENT_REACT_WEB_SEARCH_ENDPOINT:https://api.tavily.com/search}
     resource-download:
       max-bytes: ${AGENT_REACT_RESOURCE_MAX_BYTES:10485760}
     pdf:
+      # Blank uses the bundled classpath font: fonts/simhei.ttf.
+      # Set this only when an external TTF should override the bundled font.
       font-path: ${AGENT_REACT_PDF_FONT_PATH:}
 
 upload:
@@ -115,6 +134,16 @@ rag:
       bm25-weight: ${RAG_FUSION_BM25_WEIGHT:0.4}
     rerank:
       enabled: ${RAG_RERANK_ENABLED:true}
+      api:
+        # Cross-encoder rerank API. Off by default; set RAG_RERANK_API_ENABLED=true
+        # and RAG_RERANK_API_KEY to activate. The default endpoint/model target
+        # SiliconFlow; Jina and Cohere share the same /rerank contract.
+        enabled: ${RAG_RERANK_API_ENABLED:false}
+        base-url: ${RAG_RERANK_API_BASE_URL:https://api.siliconflow.cn/v1}
+        api-key: ${RAG_RERANK_API_KEY:}
+        model: ${RAG_RERANK_API_MODEL:BAAI/bge-reranker-v2-m3}
+        candidate-limit: ${RAG_RERANK_API_CANDIDATE_LIMIT:12}
+        timeout-ms: ${RAG_RERANK_API_TIMEOUT_MS:4000}
 
 document:
   parsing:

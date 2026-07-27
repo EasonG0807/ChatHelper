@@ -12,6 +12,7 @@ import com.example.demo.service.DocumentService;
 import com.example.demo.service.RagCachedRetrievalService;
 import com.example.demo.service.RagSearchResult;
 import com.example.demo.service.SpringAiService;
+import com.example.agent.service.ConversationQueryRewriter;
 import jakarta.servlet.http.HttpSession;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +40,7 @@ public class DocAgentController {
     private final RagCachedRetrievalService ragCachedRetrievalService;
     private final SpringAiService springAiService;
     private final DocAgentService docAgentService;
+    private final ConversationQueryRewriter queryRewriter;
 
     @GetMapping
     public String agentDocList(HttpSession session, Model model) {
@@ -102,9 +104,14 @@ public class DocAgentController {
                 ? docAgentService.defaultQuestionForTask(normalizedTask)
                 : question;
 
-        RagSearchResult searchResult = ragCachedRetrievalService.search(uid, documentId, effectiveQuestion);
-        String prompt = docAgentService.buildAgentPrompt(normalizedTask, effectiveQuestion, searchResult);
         List<ChatMessage> history = chatMessageRepository.findByConversationIdOrderByIdAsc(conversationId);
+        String retrievalQuestion = queryRewriter.rewrite(
+                effectiveQuestion,
+                history.stream()
+                        .map(message -> new ConversationQueryRewriter.Turn(message.getRole(), message.getMessage()))
+                        .toList());
+        RagSearchResult searchResult = ragCachedRetrievalService.search(uid, documentId, retrievalQuestion);
+        String prompt = docAgentService.buildAgentPrompt(normalizedTask, effectiveQuestion, searchResult);
 
         ChatMessage userMessage = new ChatMessage();
         userMessage.setConversationId(conversationId);

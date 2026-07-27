@@ -4,15 +4,18 @@ import com.example.agent.entity.AgentSession;
 import com.example.agent.entity.AgentToolConfig;
 import com.example.agent.entity.AgentToolSource;
 import com.example.agent.service.AgentService;
-import com.example.agent.service.AgentSkillService;
+import com.example.agent.service.AgentArtifactService;
+import com.example.agent.service.AgentMemoryService;
 import com.example.agent.service.AgentSessionService;
 import com.example.agent.service.AgentStepService;
 import com.example.agent.service.AgentToolManagementService;
+import com.example.agent.executor.ReActAgentExecutor;
+import com.example.agent.service.SkillLibraryService;
 import com.example.agent.tool.AgentToolRegistry;
+import com.example.agent.tool.react.AgentWorkspaceService;
 import com.example.demo.service.ImageQuestionContext;
 import com.example.demo.service.ImageQuestionContextService;
 import jakarta.servlet.http.HttpSession;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import reactor.core.publisher.Flux;
 
 import java.util.Arrays;
@@ -37,12 +41,15 @@ import java.util.Map;
 public class AgentController {
 
     private final AgentSessionService sessionService;
+    private final AgentArtifactService artifactService;
     private final AgentStepService stepService;
     private final AgentService agentService;
+    private final AgentMemoryService memoryService;
     private final AgentToolRegistry toolRegistry;
     private final ImageQuestionContextService imageQuestionContextService;
-    private final AgentSkillService skillService;
+    private final SkillLibraryService skillLibraryService;
     private final AgentToolManagementService toolManagementService;
+    private final AgentWorkspaceService workspaceService;
 
     @Value("${agent.admin.user-ids:1}")
     private String adminUserIds;
@@ -55,27 +62,41 @@ public class AgentController {
         }
 
         toolRegistry.syncToolConfigs();
-        skillService.ensureDefaultSkills();
         AgentSession activeSession = sessionService.getOrCreateSession(userId, sessionId);
         model.addAttribute("activeSession", activeSession);
-        model.addAttribute("activeSkill", skillService.resolveSkill(activeSession.getSkillId()));
-        model.addAttribute("skills", skillService.listEnabledSkills());
+        model.addAttribute("skills", skillLibraryService.listActiveSkills(userId));
         model.addAttribute("sessions", sessionService.listActiveSessions(userId));
         model.addAttribute("messages", sessionService.listMessages(activeSession.getId()));
         model.addAttribute("steps", stepService.listSteps(activeSession.getId()));
+        model.addAttribute("artifacts", artifactService.list(userId, activeSession.getId()));
         return "agent";
     }
 
     @PostMapping("/session/create")
     public String createSession(@RequestParam(required = false) String title,
-                                @RequestParam(required = false) Long skillId,
                                 HttpSession httpSession) {
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return "redirect:/auth/login";
         }
-        AgentSession session = sessionService.createSession(userId, title, skillId);
+        AgentSession session = sessionService.createSession(userId, title);
         return "redirect:/agent?sessionId=" + session.getId();
+    }
+
+    @PostMapping("/session/{sessionId}/delete")
+    public String deleteSession(@PathVariable Long sessionId, HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return "redirect:/auth/login";
+        }
+        try {
+            memoryService.clearSessionMemories(userId, sessionId);
+            sessionService.deleteSession(userId, sessionId);
+            workspaceService.deleteWorkspace(userId, sessionId);
+        } catch (IllegalArgumentException ignored) {
+            // Session already gone or not owned by this user; the list below reflects reality.
+        }
+        return "redirect:/agent";
     }
 
     @GetMapping(value = "/ask", produces = "text/event-stream")
@@ -89,7 +110,21 @@ public class AgentController {
             return Flux.just("Please login first.", "[DONE]");
         }
         ImageQuestionContext imageContext = imageQuestionContextService.find(userId, imageContextId);
-        return agentService.streamAsk(userId, sessionId, question, imageContext);
+        return agentService.streamAsk(userId, sessionId, question, imageContext)
+                .map(this::escapeSseChunk);
+    }
+
+    /**
+     * SSE frames treat newlines as protocol delimiters, so multi-line answer
+     * chunks must travel as single-line escaped text. Step frames are already
+     * single-line JSON and [DONE] is a bare marker; both pass through as-is.
+     * The client reverses this escaping before rendering markdown.
+     */
+    private String escapeSseChunk(String chunk) {
+        if (chunk.startsWith(ReActAgentExecutor.STEP_EVENT_PREFIX) || "[DONE]".equals(chunk)) {
+            return chunk;
+        }
+        return chunk.replace("\\", "\\\\").replace("\n", "\\n");
     }
 
     @PostMapping("/image-context")
@@ -122,6 +157,27 @@ public class AgentController {
         return ResponseEntity.ok(stepService.listSteps(session.getId()));
     }
 
+    @GetMapping("/memories")
+    @ResponseBody
+    public ResponseEntity<?> memories(HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return ResponseEntity.status(401).body("Please login first.");
+        }
+        return ResponseEntity.ok(memoryService.listActiveMemories(userId));
+    }
+
+    @PostMapping("/memories/clear")
+    @ResponseBody
+    public ResponseEntity<String> clearMemories(@RequestParam Long sessionId, HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return ResponseEntity.status(401).body("Please login first.");
+        }
+        memoryService.clearSessionMemories(userId, sessionId);
+        return ResponseEntity.ok("Session memories cleared.");
+    }
+
     @GetMapping("/admin")
     public String admin(HttpSession httpSession, Model model) {
         Long userId = (Long) httpSession.getAttribute("uid");
@@ -131,10 +187,8 @@ public class AgentController {
         if (!isAdmin(userId)) {
             return "redirect:/agent";
         }
-        skillService.ensureDefaultSkills();
         List<AgentToolConfig> tools = toolManagementService.listTools();
         model.addAttribute("tools", tools);
-        model.addAttribute("skills", skillService.listSkillProfiles());
         model.addAttribute("toolCount", tools.size());
         model.addAttribute("mcpToolCount", tools.stream()
                 .filter(tool -> tool.getToolSource() == AgentToolSource.MCP)
@@ -186,97 +240,116 @@ public class AgentController {
     }
 
     @GetMapping("/skills")
+    public String skillLibrary(HttpSession httpSession, Model model) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return "redirect:/auth/login";
+        }
+        model.addAttribute("skills", skillLibraryService.listVisibleSkills(userId));
+        model.addAttribute("currentUserId", userId);
+        model.addAttribute("isAdmin", isAdmin(userId));
+        return "agent-skills";
+    }
+
+    @GetMapping("/skills/list")
     @ResponseBody
-    public ResponseEntity<?> skills(HttpSession httpSession) {
+    public ResponseEntity<?> listSkills(HttpSession httpSession) {
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return ResponseEntity.status(401).body("Please login first.");
         }
-        skillService.ensureDefaultSkills();
-        return ResponseEntity.ok(skillService.listEnabledSkillProfiles());
+        return ResponseEntity.ok(skillLibraryService.listActiveSkills(userId).stream()
+                .map(skill -> Map.of(
+                        "name", skill.getName(),
+                        "description", skill.getDescription() == null ? "" : skill.getDescription(),
+                        "builtIn", skill.isBuiltInSkill()))
+                .toList());
+    }
+
+    @PostMapping("/skills/create")
+    public String createSkill(@RequestParam(required = false) String rawMarkdown,
+                              @RequestParam(required = false) String name,
+                              @RequestParam(required = false) String description,
+                              @RequestParam(required = false) String content,
+                              HttpSession httpSession,
+                              RedirectAttributes redirectAttributes) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return "redirect:/auth/login";
+        }
+        try {
+            if (rawMarkdown != null && !rawMarkdown.isBlank()) {
+                skillLibraryService.createFromMarkdown(userId, rawMarkdown);
+            } else {
+                skillLibraryService.create(userId, name, description, content);
+            }
+        } catch (IllegalArgumentException ex) {
+            redirectAttributes.addFlashAttribute("skillError", ex.getMessage());
+        }
+        return "redirect:/agent/skills";
+    }
+
+    @PostMapping("/skills/{skillId}/update")
+    public String updateSkill(@PathVariable Long skillId,
+                              @RequestParam String description,
+                              @RequestParam String content,
+                              HttpSession httpSession,
+                              RedirectAttributes redirectAttributes) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return "redirect:/auth/login";
+        }
+        try {
+            skillLibraryService.update(userId, skillId, description, content);
+        } catch (IllegalArgumentException ex) {
+            redirectAttributes.addFlashAttribute("skillError", ex.getMessage());
+        }
+        return "redirect:/agent/skills";
     }
 
     @PostMapping("/skills/{skillId}/enabled")
-    @ResponseBody
-    public ResponseEntity<?> setSkillEnabled(@PathVariable Long skillId,
-                                             @RequestParam boolean enabled,
-                                             HttpSession httpSession) {
-        Long userId = (Long) httpSession.getAttribute("uid");
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Please login first.");
-        }
-        if (!isAdmin(userId)) {
-            return ResponseEntity.status(403).body("Admin permission is required.");
-        }
-        return ResponseEntity.ok(skillService.setSkillEnabled(skillId, enabled));
-    }
-
-    @PostMapping("/admin/skills/{skillId}/enabled")
-    public String setSkillEnabledFromAdmin(@PathVariable Long skillId,
-                                           @RequestParam boolean enabled,
-                                           HttpSession httpSession) {
+    public String setSkillEnabled(@PathVariable Long skillId,
+                                  @RequestParam boolean enabled,
+                                  HttpSession httpSession,
+                                  RedirectAttributes redirectAttributes) {
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return "redirect:/auth/login";
         }
-        if (!isAdmin(userId)) {
-            return "redirect:/agent";
+        try {
+            skillLibraryService.setEnabled(userId, isAdmin(userId), skillId, enabled);
+        } catch (IllegalArgumentException ex) {
+            redirectAttributes.addFlashAttribute("skillError", ex.getMessage());
         }
-        skillService.setSkillEnabled(skillId, enabled);
-        return "redirect:/agent/admin";
+        return "redirect:/agent/skills";
     }
 
-    @PostMapping("/skills/{skillId}/tools")
-    @ResponseBody
-    public ResponseEntity<?> replaceSkillTools(@PathVariable Long skillId,
-                                               @RequestParam(required = false) List<String> toolNames,
-                                               HttpSession httpSession) {
-        Long userId = (Long) httpSession.getAttribute("uid");
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Please login first.");
-        }
-        if (!isAdmin(userId)) {
-            return ResponseEntity.status(403).body("Admin permission is required.");
-        }
-        return ResponseEntity.ok(skillService.replaceSkillTools(skillId, toolNames));
-    }
-
-    @PostMapping("/admin/skills/{skillId}/tools")
-    public String replaceSkillToolsFromAdmin(@PathVariable Long skillId,
-                                             @RequestParam(required = false) List<String> toolNames,
-                                             HttpSession httpSession) {
+    @PostMapping("/skills/{skillId}/delete")
+    public String deleteSkill(@PathVariable Long skillId,
+                              HttpSession httpSession,
+                              RedirectAttributes redirectAttributes) {
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return "redirect:/auth/login";
         }
-        if (!isAdmin(userId)) {
-            return "redirect:/agent";
+        try {
+            skillLibraryService.delete(userId, skillId);
+        } catch (IllegalArgumentException ex) {
+            redirectAttributes.addFlashAttribute("skillError", ex.getMessage());
         }
-        skillService.replaceSkillTools(skillId, toolNames);
-        return "redirect:/agent/admin";
-    }
-
-    @PostMapping("/session/skill")
-    @ResponseBody
-    public ResponseEntity<?> updateSessionSkill(@RequestParam Long sessionId,
-                                                @RequestParam(required = false) Long skillId,
-                                                HttpSession httpSession) {
-        Long userId = (Long) httpSession.getAttribute("uid");
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Please login first.");
-        }
-        return ResponseEntity.ok(sessionService.updateSkill(userId, sessionId, skillId));
+        return "redirect:/agent/skills";
     }
 
     @PostMapping("/clear")
     @ResponseBody
-    @Transactional
     public ResponseEntity<String> clear(@RequestParam Long sessionId, HttpSession httpSession) {
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return ResponseEntity.status(401).body("Please login first.");
         }
         sessionService.clearSession(userId, sessionId);
+        memoryService.clearSessionMemories(userId, sessionId);
+        workspaceService.deleteWorkspace(userId, sessionId);
         return ResponseEntity.ok("Agent session cleared.");
     }
 

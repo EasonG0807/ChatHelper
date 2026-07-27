@@ -10,6 +10,8 @@
 </head>
 <body>
 
+<div class="app-ambient" aria-hidden="true"><span class="app-glow app-glow-1"></span><span class="app-glow app-glow-2"></span><span class="app-grid"></span></div>
+
 <div class="app-shell agent-app-shell">
     <div class="agent-workspace">
         <aside class="agent-panel agent-session-panel">
@@ -21,20 +23,32 @@
             <form class="agent-new-session" action="/agent/session/create" method="post">
                 <input name="title" placeholder="新会话标题">
                 <button class="btn btn-secondary" type="submit">新建</button>
-                <select name="skillId">
-                    <option th:each="skill : ${skills}"
-                            th:value="${skill.id}"
-                            th:text="${skill.name}">General Agent</option>
-                </select>
             </form>
 
+            <div class="agent-skill-catalog">
+                <div class="agent-panel-subheader">
+                    <span>技能库</span>
+                    <a href="/agent/skills">管理</a>
+                </div>
+                <p class="agent-skill-hint">Agent 会按任务自动加载匹配的技能，无需手动选择。</p>
+                <div class="agent-skill-chips">
+                    <span th:each="skill : ${skills}" class="agent-skill-chip"
+                          th:title="${skill.description}" th:text="${skill.name}">document-qa</span>
+                </div>
+            </div>
+
             <div class="agent-session-list">
-                <a th:each="s : ${sessions}"
-                   th:href="@{/agent(sessionId=${s.id})}"
-                   th:class="${s.id == activeSession.id} ? 'agent-session-item active' : 'agent-session-item'">
-                    <span th:text="${s.title}">AI超级智能体</span>
-                    <small th:text="${#temporals.format(s.updatedAt, 'MM-dd HH:mm')}">05-09 10:30</small>
-                </a>
+                <div th:each="s : ${sessions}"
+                     th:class="${s.id == activeSession.id} ? 'agent-session-item active' : 'agent-session-item'">
+                    <a class="agent-session-link" th:href="@{/agent(sessionId=${s.id})}">
+                        <span th:text="${s.title}">AI超级智能体</span>
+                        <small th:text="${#temporals.format(s.updatedAt, 'MM-dd HH:mm')}">05-09 10:30</small>
+                    </a>
+                    <form th:action="@{/agent/session/{id}/delete(id=${s.id})}" method="post"
+                          onsubmit="return confirm('确认删除该会话？聊天记录和执行步骤会一并删除。');">
+                        <button class="agent-session-delete" type="submit" title="删除会话">✕</button>
+                    </form>
+                </div>
             </div>
 
             <div class="agent-side-actions">
@@ -84,22 +98,67 @@
         </main>
 
         <aside class="agent-panel agent-step-panel">
-            <div class="agent-panel-header">
-                <h2>调用链</h2>
-                <p>Plan / Tool Call / Tool Result / Final</p>
-            </div>
-            <div id="agentStepList" class="agent-step-list">
-                <div th:each="step : ${steps}" class="agent-step">
-                    <div class="agent-step-title">
-                        <span th:text="${step.stepIndex + '. ' + step.stepType}">1. PLAN</span>
-                        <em th:text="${step.status}">SUCCESS</em>
+            <section class="agent-artifact-section" aria-labelledby="agentArtifactTitle">
+                <div class="agent-panel-header agent-artifact-header">
+                    <div>
+                        <h2 id="agentArtifactTitle">产出</h2>
+                        <p>本会话生成的文件</p>
                     </div>
-                    <div class="agent-step-tool" th:text="${step.toolSource + ' / ' + step.toolName}">LOCAL / rag_search</div>
-                    <pre th:if="${step.toolArguments != null}" th:text="${step.toolArguments}"></pre>
-                    <pre th:if="${step.toolResult != null}" th:text="${step.toolResult}"></pre>
-                    <pre th:if="${step.errorMessage != null}" th:text="${step.errorMessage}"></pre>
+                    <span id="agentArtifactCount" class="agent-artifact-count"
+                          th:text="${artifacts == null ? 0 : #lists.size(artifacts)}">0</span>
                 </div>
-            </div>
+                <div id="agentArtifactFeedback" class="agent-artifact-feedback" role="status" aria-live="polite"></div>
+                <div id="agentArtifactList" class="agent-artifact-list" aria-live="polite">
+                    <div th:if="${#lists.isEmpty(artifacts)}" class="agent-artifact-empty">
+                        暂无产出，生成 PDF 后会显示在这里。
+                    </div>
+                    <article th:each="artifact : ${artifacts}"
+                             class="agent-artifact-card"
+                             th:attr="data-artifact-id=${artifact.id}">
+                        <div class="agent-artifact-icon" aria-hidden="true"
+                             th:text="${artifact.contentType == 'application/pdf' ? 'PDF' : 'FILE'}">PDF</div>
+                        <div class="agent-artifact-main">
+                            <strong class="agent-artifact-name" th:text="${artifact.fileName}">report.pdf</strong>
+                            <div class="agent-artifact-meta">
+                                <span th:if="${artifact.contentType != null}" th:text="${artifact.contentType}">application/pdf</span>
+                                <span th:if="${artifact.sizeLabel != null}" th:text="${artifact.sizeLabel}">128 KB</span>
+                                <time th:if="${artifact.createdAt != null}"
+                                      th:datetime="${artifact.createdAt}"
+                                      th:text="${#temporals.format(artifact.createdAt, 'MM-dd HH:mm')}">07-27 14:30</time>
+                            </div>
+                        </div>
+                        <div class="agent-artifact-actions">
+                            <a th:if="${artifact.previewable}"
+                               class="agent-artifact-action"
+                               data-artifact-action="preview"
+                               th:attr="data-artifact-url=${artifact.contentUrl}"
+                               target="_blank" rel="noopener noreferrer">预览</a>
+                            <a class="agent-artifact-action agent-artifact-download"
+                               data-artifact-action="download"
+                               th:attr="data-artifact-url=${artifact.downloadUrl}">下载</a>
+                        </div>
+                    </article>
+                </div>
+            </section>
+
+            <section class="agent-call-chain-section" aria-labelledby="agentCallChainTitle">
+                <div class="agent-panel-header">
+                    <h2 id="agentCallChainTitle">调用链</h2>
+                    <p>Plan / Tool Call / Tool Result / Final</p>
+                </div>
+                <div id="agentStepList" class="agent-step-list">
+                    <div th:each="step : ${steps}" class="agent-step">
+                        <div class="agent-step-title">
+                            <span th:text="${step.stepIndex + '. ' + step.stepType}">1. PLAN</span>
+                            <em th:text="${step.status}">SUCCESS</em>
+                        </div>
+                        <div class="agent-step-tool" th:text="${step.toolSource + ' / ' + step.toolName}">LOCAL / rag_search</div>
+                        <pre th:if="${step.toolArguments != null}" th:text="${step.toolArguments}"></pre>
+                        <pre th:if="${step.toolResult != null}" th:text="${step.toolResult}"></pre>
+                        <pre th:if="${step.errorMessage != null}" th:text="${step.errorMessage}"></pre>
+                    </div>
+                </div>
+            </section>
         </aside>
     </div>
 </div>
@@ -110,11 +169,14 @@
     marked.setOptions({ gfm: true, breaks: true });
     let agentEventSource = null;
     let selectedAgentImageFile = null;
+    let artifactRefreshSequence = 0;
 
     document.addEventListener("DOMContentLoaded", function () {
         document.querySelectorAll(".markdown-content").forEach(el => {
             el.innerHTML = marked.parse(el.textContent || "");
         });
+        hydrateArtifactLinks(document.getElementById("agentArtifactList"));
+        updateArtifactCount();
         scrollChatToBottom();
     });
 
@@ -176,7 +238,7 @@
         aiDiv.className = "msg ai-msg";
         const aiBubble = document.createElement("div");
         aiBubble.className = "bubble ai-bubble markdown-content";
-        aiBubble.innerHTML = "<span>...</span>";
+        setBubbleStatus(aiBubble, "正在思考…");
         aiDiv.appendChild(aiBubble);
         box.appendChild(aiDiv);
 
@@ -196,14 +258,34 @@
         agentEventSource = new EventSourcePolyfill(url);
         let full = "";
 
+        // The live panel shows only the current run; refreshSteps() restores
+        // the whole session history once the stream finishes.
+        const stepList = document.getElementById("agentStepList");
+        stepList.innerHTML = "";
+
         agentEventSource.onmessage = function (event) {
             if (event.data === "[DONE]") {
                 agentEventSource.close();
                 agentEventSource = null;
                 refreshSteps();
+                refreshArtifacts();
                 return;
             }
-            full += event.data;
+            if (event.data.startsWith("@@STEP@@")) {
+                let step = null;
+                try { step = JSON.parse(event.data.slice(8)); } catch (e) { return; }
+                if (step.phase !== "PLANNING") appendLiveStep(step);
+                if (step.phase === "TOOL_RESULT" && step.status === "SUCCESS") {
+                    if (step.artifact) {
+                        upsertArtifact(step.artifact);
+                    } else {
+                        refreshArtifacts();
+                    }
+                }
+                if (!full) setBubbleStatus(aiBubble, liveStatusText(step));
+                return;
+            }
+            full += unescapeSseChunk(event.data);
             aiBubble.innerHTML = marked.parse(full);
             scrollChatToBottom();
         };
@@ -214,7 +296,272 @@
             agentEventSource.close();
             agentEventSource = null;
             refreshSteps();
+            refreshArtifacts();
         };
+    }
+
+    // Reverses the server-side SSE escaping: "\\" first, then "\n",
+    // using a placeholder so escaped backslashes never merge with "\n".
+    function unescapeSseChunk(data) {
+        return data
+            .replace(/\\\\/g, "\u0000")
+            .replace(/\\n/g, "\n")
+            .replace(/\u0000/g, "\\");
+    }
+
+    function liveStatusText(step) {
+        switch (step.phase) {
+            case "PLANNING": return step.detail || "正在规划…";
+            case "PLAN": return step.detail || "已生成计划";
+            case "TOOL_CALL": return `正在调用 ${step.tool || "工具"}…`;
+            case "TOOL_RESULT": return `${step.tool || "工具"} 调用完成`;
+            case "TOOL_ERROR": return `${step.tool || "工具"} 调用失败，继续尝试…`;
+            case "FINAL": return "正在生成回答…";
+            default: return "处理中…";
+        }
+    }
+
+    function setBubbleStatus(bubble, text) {
+        bubble.innerHTML = "";
+        const status = document.createElement("span");
+        status.className = "agent-stream-status";
+        status.textContent = text;
+        bubble.appendChild(status);
+    }
+
+    function appendLiveStep(step) {
+        const list = document.getElementById("agentStepList");
+        const item = document.createElement("div");
+        item.className = "agent-step agent-step-live";
+        const title = document.createElement("div");
+        title.className = "agent-step-title";
+        const label = document.createElement("span");
+        label.textContent = step.phase;
+        const status = document.createElement("em");
+        status.textContent = step.status || "";
+        title.appendChild(label);
+        title.appendChild(status);
+        item.appendChild(title);
+        if (step.tool) {
+            const tool = document.createElement("div");
+            tool.className = "agent-step-tool";
+            tool.textContent = step.tool;
+            item.appendChild(tool);
+        }
+        if (step.detail) {
+            const pre = document.createElement("pre");
+            pre.textContent = step.detail;
+            item.appendChild(pre);
+        }
+        list.appendChild(item);
+        list.scrollTop = list.scrollHeight;
+    }
+
+    function safeArtifactText(value, fallback, maxLength) {
+        const limit = maxLength || 240;
+        if (typeof value !== "string" && typeof value !== "number") return fallback || "";
+        const text = String(value).trim();
+        if (!text) return fallback || "";
+        return text.length > limit ? text.slice(0, limit) + "…" : text;
+    }
+
+    function safeArtifactUrl(value) {
+        if (typeof value !== "string" || value.length > 2048) return null;
+        try {
+            const url = new URL(value, window.location.origin);
+            if (url.origin !== window.location.origin || !url.pathname.startsWith("/agent/artifacts/")) {
+                return null;
+            }
+            return url.pathname + url.search;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function hydrateArtifactLinks(root) {
+        if (!root) return;
+        root.querySelectorAll("[data-artifact-url]").forEach(link => {
+            const safeUrl = safeArtifactUrl(link.dataset.artifactUrl);
+            if (safeUrl) {
+                link.href = safeUrl;
+                link.removeAttribute("aria-disabled");
+            } else {
+                link.removeAttribute("href");
+                link.setAttribute("aria-disabled", "true");
+            }
+        });
+    }
+
+    function formatArtifactSize(sizeBytes, sizeLabel) {
+        const providedLabel = safeArtifactText(sizeLabel, "", 40);
+        if (providedLabel) return providedLabel;
+        const bytes = Number(sizeBytes);
+        if (!Number.isFinite(bytes) || bytes < 0) return "";
+        if (bytes < 1024) return `${Math.round(bytes)} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function formatArtifactDate(value) {
+        if (typeof value !== "string" && typeof value !== "number") return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return safeArtifactText(value, "", 40);
+        return new Intl.DateTimeFormat("zh-CN", {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+        }).format(date);
+    }
+
+    function createArtifactAction(label, value, className, newWindow) {
+        const safeUrl = safeArtifactUrl(value);
+        if (!safeUrl) return null;
+        const link = document.createElement("a");
+        link.className = className;
+        link.href = safeUrl;
+        link.textContent = label;
+        if (newWindow) {
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+        }
+        return link;
+    }
+
+    function renderArtifactCard(artifact) {
+        if (!artifact || (typeof artifact !== "object")) return null;
+        const artifactId = safeArtifactText(artifact.id, "", 128);
+        if (!artifactId) return null;
+
+        const fileName = safeArtifactText(artifact.fileName, "未命名文件", 260);
+        const contentType = safeArtifactText(artifact.contentType, "", 100);
+        const card = document.createElement("article");
+        card.className = "agent-artifact-card";
+        card.dataset.artifactId = artifactId;
+
+        const icon = document.createElement("div");
+        icon.className = "agent-artifact-icon";
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = contentType.toLowerCase().includes("pdf") ? "PDF" : "FILE";
+        card.appendChild(icon);
+
+        const main = document.createElement("div");
+        main.className = "agent-artifact-main";
+        const name = document.createElement("strong");
+        name.className = "agent-artifact-name";
+        name.textContent = fileName;
+        main.appendChild(name);
+
+        const meta = document.createElement("div");
+        meta.className = "agent-artifact-meta";
+        [contentType, formatArtifactSize(artifact.sizeBytes, artifact.sizeLabel)].forEach(value => {
+            if (!value) return;
+            const span = document.createElement("span");
+            span.textContent = value;
+            meta.appendChild(span);
+        });
+        const dateLabel = formatArtifactDate(artifact.createdAt);
+        if (dateLabel) {
+            const time = document.createElement("time");
+            time.textContent = dateLabel;
+            const dateTime = safeArtifactText(artifact.createdAt, "", 80);
+            if (dateTime) time.dateTime = dateTime;
+            meta.appendChild(time);
+        }
+        main.appendChild(meta);
+        card.appendChild(main);
+
+        const actions = document.createElement("div");
+        actions.className = "agent-artifact-actions";
+        if (artifact.previewable === true) {
+            const preview = createArtifactAction(
+                "预览", artifact.contentUrl, "agent-artifact-action", true
+            );
+            if (preview) actions.appendChild(preview);
+        }
+        const download = createArtifactAction(
+            "下载", artifact.downloadUrl, "agent-artifact-action agent-artifact-download", false
+        );
+        if (download) actions.appendChild(download);
+        card.appendChild(actions);
+        return card;
+    }
+
+    function renderArtifactEmpty() {
+        const empty = document.createElement("div");
+        empty.className = "agent-artifact-empty";
+        empty.textContent = "暂无产出，生成 PDF 后会显示在这里。";
+        return empty;
+    }
+
+    function updateArtifactCount() {
+        const list = document.getElementById("agentArtifactList");
+        const count = document.getElementById("agentArtifactCount");
+        if (!list || !count) return;
+        count.textContent = String(list.querySelectorAll(".agent-artifact-card").length);
+    }
+
+    function setArtifactFeedback(message) {
+        const feedback = document.getElementById("agentArtifactFeedback");
+        if (feedback) feedback.textContent = message || "";
+    }
+
+    function upsertArtifact(artifact) {
+        const list = document.getElementById("agentArtifactList");
+        const card = renderArtifactCard(artifact);
+        if (!list || !card) return;
+        const artifactId = card.dataset.artifactId;
+        const existing = Array.from(list.querySelectorAll(".agent-artifact-card"))
+            .find(item => item.dataset.artifactId === artifactId);
+        list.querySelectorAll(".agent-artifact-empty").forEach(item => item.remove());
+        if (existing) {
+            existing.replaceWith(card);
+        } else {
+            list.prepend(card);
+        }
+        setArtifactFeedback("");
+        updateArtifactCount();
+    }
+
+    function renderArtifactList(artifacts) {
+        const list = document.getElementById("agentArtifactList");
+        if (!list) return;
+        const fragment = document.createDocumentFragment();
+        const seen = new Set();
+        artifacts.forEach(artifact => {
+            const card = renderArtifactCard(artifact);
+            if (!card || seen.has(card.dataset.artifactId)) return;
+            seen.add(card.dataset.artifactId);
+            fragment.appendChild(card);
+        });
+        list.replaceChildren(fragment);
+        if (!list.hasChildNodes()) list.appendChild(renderArtifactEmpty());
+        setArtifactFeedback("");
+        updateArtifactCount();
+    }
+
+    async function refreshArtifacts() {
+        const sessionId = document.getElementById("agentSessionId").value;
+        const requestSequence = ++artifactRefreshSequence;
+        try {
+            const response = await fetch(`/agent/artifacts?sessionId=${encodeURIComponent(sessionId)}`, {
+                headers: { "Accept": "application/json" }
+            });
+            if (requestSequence !== artifactRefreshSequence) return;
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                return;
+            }
+            if (!response.ok) throw new Error("产出列表加载失败");
+            const artifacts = await response.json();
+            if (!Array.isArray(artifacts)) throw new Error("产出列表格式错误");
+            if (requestSequence === artifactRefreshSequence) renderArtifactList(artifacts);
+        } catch (error) {
+            if (requestSequence === artifactRefreshSequence) {
+                setArtifactFeedback("产出列表暂时无法刷新，请稍后重试。");
+            }
+        }
     }
 
     function refreshSteps() {
@@ -233,7 +580,12 @@
         item.className = "agent-step";
         const title = document.createElement("div");
         title.className = "agent-step-title";
-        title.innerHTML = `<span>${step.stepIndex}. ${step.stepType}</span><em>${step.status}</em>`;
+        const label = document.createElement("span");
+        label.textContent = `${step.stepIndex}. ${step.stepType}`;
+        const status = document.createElement("em");
+        status.textContent = step.status || "";
+        title.appendChild(label);
+        title.appendChild(status);
         item.appendChild(title);
 
         const tool = document.createElement("div");

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>技能库</title>
+    <link rel="stylesheet" href="/premium.css">
+</head>
+<body>
+
+<div class="app-ambient" aria-hidden="true"><span class="app-glow app-glow-1"></span><span class="app-glow app-glow-2"></span><span class="app-grid"></span></div>
+<div class="agent-admin-shell">
+    <header class="agent-admin-header">
+        <div>
+            <p class="eyebrow">Skill Library</p>
+            <h1>技能库</h1>
+            <p>技能是一份 SKILL.md：元数据（name + description）+ 详细指令正文。Agent 只在任务匹配时通过 use_skill 工具加载正文。</p>
+        </div>
+        <div class="agent-admin-actions">
+            <a class="btn btn-secondary" href="/agent">返回 Agent</a>
+            <a class="btn" th:if="${isAdmin}" href="/agent/admin">Agent 管理台</a>
+        </div>
+    </header>
+
+    <div th:if="${skillError}" class="agent-skill-error" th:text="${skillError}">错误信息</div>
+
+    <main class="agent-admin-grid">
+        <section class="agent-admin-panel">
+            <div class="section-heading">
+                <span>已注册技能</span>
+                <small>内置技能全员共享，自建技能仅自己可用</small>
+            </div>
+
+            <article th:each="skill : ${skills}" class="agent-admin-skill">
+                <div class="agent-admin-skill-head">
+                    <div>
+                        <h2 th:text="${skill.name}">document-qa</h2>
+                        <p>
+                            <span th:class="${skill.builtInSkill} ? 'badge badge-pending' : 'badge badge-success'"
+                                  th:text="${skill.builtInSkill} ? '内置' : '我的'">内置</span>
+                            <span th:class="${skill.enabled} ? 'badge badge-success' : 'badge badge-danger'"
+                                  th:text="${skill.enabled} ? '启用' : '停用'">启用</span>
+                        </p>
+                    </div>
+                    <div class="agent-skill-item-actions">
+                        <form th:if="${!skill.builtInSkill or isAdmin}"
+                              th:action="@{/agent/skills/{skillId}/enabled(skillId=${skill.id})}" method="post">
+                            <input type="hidden" name="enabled" th:value="${skill.enabled == null ? true : !skill.enabled}">
+                            <button th:class="${skill.enabled} ? 'btn btn-danger btn-sm' : 'btn btn-success btn-sm'"
+                                    type="submit"
+                                    th:text="${skill.enabled} ? '停用' : '启用'">切换</button>
+                        </form>
+                        <form th:if="${!skill.builtInSkill}"
+                              th:action="@{/agent/skills/{skillId}/delete(skillId=${skill.id})}" method="post"
+                              onsubmit="return confirm('确认删除该技能？');">
+                            <button class="btn btn-danger btn-sm" type="submit">删除</button>
+                        </form>
+                    </div>
+                </div>
+
+                <p class="agent-admin-skill-desc" th:text="${skill.description}">Skill description</p>
+
+                <details class="agent-skill-details" th:if="${skill.builtInSkill}">
+                    <summary>查看技能指令</summary>
+                    <pre style="white-space: pre-wrap;" th:text="${skill.content}">skill content</pre>
+                </details>
+
+                <details class="agent-skill-details" th:if="${!skill.builtInSkill}">
+                    <summary>编辑技能</summary>
+                    <form class="agent-skill-form"
+                          th:action="@{/agent/skills/{skillId}/update(skillId=${skill.id})}" method="post">
+                        <input name="description" th:value="${skill.description}" placeholder="一句话描述（决定 Agent 是否加载）" required>
+                        <textarea class="agent-skill-content" name="content" th:text="${skill.content}" required></textarea>
+                        <div>
+                            <button class="btn btn-secondary btn-sm" type="submit">保存修改</button>
+                        </div>
+                    </form>
+                </details>
+            </article>
+
+            <div th:if="${#lists.isEmpty(skills)}" class="agent-admin-empty">
+                技能库为空。内置技能会在应用启动时自动导入，也可以在右侧创建自己的技能。
+            </div>
+        </section>
+
+        <section class="agent-admin-panel">
+            <div class="section-heading">
+                <span>新建技能</span>
+                <small>粘贴完整 SKILL.md，或分字段填写</small>
+            </div>
+
+            <article class="agent-admin-skill">
+                <h2>方式一：粘贴 SKILL.md</h2>
+                <p class="agent-admin-skill-desc">
+                    以 frontmatter 开头：<code>---</code>、<code>name: my-skill</code>、<code>description: ...</code>、<code>---</code>，其后为指令正文。
+                </p>
+                <form class="agent-skill-form" action="/agent/skills/create" method="post">
+                    <textarea class="agent-skill-content" name="rawMarkdown" placeholder="---
+name: weekly-report
+description: 把本周对话与工具结果整理成结构化周报。
+---
+## 工作流
+1. ...
+## 输出模板
+..." required></textarea>
+                    <div>
+                        <button class="btn" type="submit">导入技能</button>
+                    </div>
+                </form>
+            </article>
+
+            <article class="agent-admin-skill">
+                <h2>方式二：分字段创建</h2>
+                <form class="agent-skill-form" action="/agent/skills/create" method="post">
+                    <input name="name" placeholder="技能名（小写字母/数字/-/_，如 weekly-report）" required>
+                    <input name="description" placeholder="一句话描述：Agent 靠它判断何时加载该技能" required>
+                    <textarea class="agent-skill-content" name="content"
+                              placeholder="技能指令正文（Markdown）：详细工作流、步骤、工具使用顺序、输出模板…" required></textarea>
+                    <div>
+                        <button class="btn" type="submit">创建技能</button>
+                    </div>
+                </form>
+            </article>
+        </section>
+    </main>
+</div>
+</body>
+</html>

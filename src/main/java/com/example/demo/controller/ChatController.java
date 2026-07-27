@@ -10,6 +10,7 @@ import com.example.demo.service.ImageQuestionContextService;
 import com.example.demo.service.RagCachedRetrievalService;
 import com.example.demo.service.RagSearchResult;
 import com.example.demo.service.SpringAiService;
+import com.example.agent.service.ConversationQueryRewriter;
 import jakarta.servlet.http.HttpSession;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +39,7 @@ public class ChatController {
     private final DocumentRepository documentRepository;
     private final SpringAiService springAiService;
     private final ImageQuestionContextService imageQuestionContextService;
+    private final ConversationQueryRewriter queryRewriter;
 
     @GetMapping("/start")
     public String start(@RequestParam Long docId, HttpSession session, Model model) {
@@ -108,7 +110,13 @@ public class ChatController {
                 ? question
                 : question + "\n\n[图片输入]\n" + imageContext.description();
 
-        RagSearchResult searchResult = ragCachedRetrievalService.search(uid, documentId, effectiveQuestion);
+        List<ChatMessage> history = msgRepo.findByConversationIdOrderByIdAsc(conversationId);
+        String retrievalQuestion = queryRewriter.rewrite(
+                effectiveQuestion,
+                history.stream()
+                        .map(message -> new ConversationQueryRewriter.Turn(message.getRole(), message.getMessage()))
+                        .toList());
+        RagSearchResult searchResult = ragCachedRetrievalService.search(uid, documentId, retrievalQuestion);
         String ragPrompt = """
                 你是企业文档知识库助手。请严格基于“检索证据”回答用户问题，不要编造证据外的信息。
                 如果证据不足，请明确说明“当前文档证据不足”，并给出还需要补充哪些信息。
@@ -126,8 +134,6 @@ public class ChatController {
                 2. 先直接回答，再补充依据。
                 3. 不要输出没有证据支撑的确定性结论。
                 """.formatted(imagePromptContext, searchResult.buildPromptContext(), question);
-        List<ChatMessage> history = msgRepo.findByConversationIdOrderByIdAsc(conversationId);
-
         ChatMessage user = new ChatMessage();
         user.setConversationId(conversationId);
         user.setRole("user");

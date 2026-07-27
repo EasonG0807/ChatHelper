@@ -1,5 +1,7 @@
 package com.example.agent.tool.react;
 
+import java.nio.file.Path;
+
 public record ToolExecutionResult(
         boolean success,
         String content,
@@ -26,7 +28,7 @@ public record ToolExecutionResult(
             StringBuilder observation = new StringBuilder();
             observation.append(content == null ? "" : content);
             if (artifactPath != null && !artifactPath.isBlank()) {
-                observation.append("\n\nArtifact: ").append(artifactPath);
+                observation.append("\n\nArtifact ready: ").append(artifactFileName());
             }
             return observation.toString();
         }
@@ -38,5 +40,14 @@ public record ToolExecutionResult(
             return value;
         }
         return value.substring(0, MAX_CONTENT_LENGTH) + "\n\n[TRUNCATED]";
+    }
+
+    private String artifactFileName() {
+        try {
+            Path fileName = Path.of(artifactPath).getFileName();
+            return fileName == null ? "generated file" : fileName.toString();
+        } catch (RuntimeException invalidPath) {
+            return "generated file";
+        }
     }
 }

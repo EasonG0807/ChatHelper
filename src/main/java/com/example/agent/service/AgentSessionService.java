@@ -4,6 +4,7 @@ import com.example.agent.entity.AgentMessage;
 import com.example.agent.entity.AgentSession;
 import com.example.agent.entity.AgentSessionStatus;
 import com.example.agent.repository.AgentMessageRepository;
+import com.example.agent.repository.AgentArtifactRepository;
 import com.example.agent.repository.AgentSessionRepository;
 import com.example.agent.repository.AgentStepRepository;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +21,7 @@ public class AgentSessionService {
     private final AgentSessionRepository sessionRepository;
     private final AgentMessageRepository messageRepository;
     private final AgentStepRepository stepRepository;
+    private final AgentArtifactRepository artifactRepository;
 
     public List<AgentSession> listActiveSessions(Long userId) {
         return sessionRepository.findByUserIdAndStatusOrderByUpdatedAtDesc(userId, AgentSessionStatus.ACTIVE);
@@ -40,23 +42,9 @@ public class AgentSessionService {
 
     @Transactional
     public AgentSession createSession(Long userId, String title) {
-        return createSession(userId, title, null);
-    }
-
-    @Transactional
-    public AgentSession createSession(Long userId, String title, Long skillId) {
         AgentSession session = new AgentSession();
         session.setUserId(userId);
         session.setTitle((title == null || title.isBlank()) ? "AI Super Agent" : title);
-        session.setSkillId(skillId);
-        return sessionRepository.save(session);
-    }
-
-    @Transactional
-    public AgentSession updateSkill(Long userId, Long sessionId, Long skillId) {
-        AgentSession session = sessionRepository.findByIdAndUserId(sessionId, userId)
-                .orElseThrow(() -> new IllegalArgumentException("Agent session not found"));
-        session.setSkillId(skillId);
         return sessionRepository.save(session);
     }
 
@@ -87,11 +75,22 @@ public class AgentSessionService {
     }
 
     @Transactional
+    public void deleteSession(Long userId, Long sessionId) {
+        AgentSession session = sessionRepository.findByIdAndUserId(sessionId, userId)
+                .orElseThrow(() -> new IllegalArgumentException("Agent session not found"));
+        messageRepository.deleteBySessionId(session.getId());
+        stepRepository.deleteBySessionId(session.getId());
+        artifactRepository.deleteBySessionId(session.getId());
+        sessionRepository.delete(session);
+    }
+
+    @Transactional
     public void clearSession(Long userId, Long sessionId) {
         AgentSession session = sessionRepository.findByIdAndUserId(sessionId, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Agent session not found"));
         messageRepository.deleteBySessionId(session.getId());
         stepRepository.deleteBySessionId(session.getId());
+        artifactRepository.deleteBySessionId(session.getId());
         session.setConversationSummary(null);
         session.setSummarizedMessageId(null);
         sessionRepository.save(session);

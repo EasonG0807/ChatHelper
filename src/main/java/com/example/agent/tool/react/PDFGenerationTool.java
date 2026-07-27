@@ -6,11 +6,12 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
-import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Component;
 
-import java.io.File;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -20,8 +21,11 @@ import java.util.Map;
 @Component
 public class PDFGenerationTool implements ReactTool {
 
+    private static final String BUNDLED_FONT_PATH = "fonts/simhei.ttf";
+
     private final AgentWorkspaceService workspaceService;
     private final String fontPath;
+    private final Resource bundledFont = new ClassPathResource(BUNDLED_FONT_PATH);
 
     public PDFGenerationTool(AgentWorkspaceService workspaceService,
                              @Value("${agent.react.pdf.font-path:}") String fontPath) {
@@ -67,28 +71,35 @@ public class PDFGenerationTool implements ReactTool {
 
         try (PDDocument document = new PDDocument()) {
             PDFont font = loadFont(document);
-            Path target = workspaceService.resolveInside(context.workspaceRoot(), fileName);
+            Path target = workspaceService.createArtifactPath(context.workspaceRoot(), fileName);
             Files.createDirectories(target.getParent());
             writePages(document, font, title, content);
             document.save(target.toFile());
-            return ToolExecutionResult.success("PDF generated: " + target, target.toString());
+            return ToolExecutionResult.success("PDF generated: " + target.getFileName(), target.toString());
         } catch (Exception ex) {
             return ToolExecutionResult.failure("PDF generation failed: " + ex.getMessage());
         }
     }
 
     private PDFont loadFont(PDDocument document) {
-        try {
-            if (fontPath != null && !fontPath.isBlank()) {
-                File file = Path.of(fontPath).toFile();
-                if (file.exists() && file.isFile()) {
-                    return PDType0Font.load(document, file);
-                }
+        if (fontPath != null && !fontPath.isBlank()) {
+            Path externalFont = Path.of(fontPath).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(externalFont)) {
+                throw new IllegalStateException("Configured PDF font does not exist: " + externalFont);
             }
-        } catch (Exception ignored) {
-            // Fall back to a built-in font. Non-Latin characters may be replaced below.
+            try (InputStream input = Files.newInputStream(externalFont)) {
+                return PDType0Font.load(document, input, true);
+            } catch (Exception ex) {
+                throw new IllegalStateException("Failed to load configured PDF font: " + externalFont, ex);
+            }
         }
-        return PDType1Font.HELVETICA;
+
+        try (InputStream input = bundledFont.getInputStream()) {
+            return PDType0Font.load(document, input, true);
+        } catch (Exception ex) {
+            throw new IllegalStateException(
+                    "Failed to load bundled PDF font from classpath:" + BUNDLED_FONT_PATH, ex);
+        }
     }
 
     private void writePages(PDDocument document, PDFont font, String title, String content) throws Exception {
@@ -97,7 +108,7 @@ public class PDFGenerationTool implements ReactTool {
         float leading = 16;
         PDRectangle pageSize = PDRectangle.LETTER;
         float width = pageSize.getWidth() - margin * 2;
-        List<String> lines = wrap(safeForFont(font, buildContent(title, content)), font, fontSize, width);
+        List<String> lines = wrap(sanitizeForFont(font, buildContent(title, content)), font, fontSize, width);
 
         PDPage page = new PDPage(pageSize);
         document.addPage(page);
@@ -136,32 +147,72 @@ public class PDFGenerationTool implements ReactTool {
 
     private List<String> wrap(String text, PDFont font, float fontSize, float width) throws Exception {
         List<String> lines = new ArrayList<>();
-        for (String paragraph : text.replace("\r", "").split("\n")) {
+        for (String paragraph : text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1)) {
             if (paragraph.isBlank()) {
                 lines.add("");
                 continue;
             }
             StringBuilder line = new StringBuilder();
-            for (String word : paragraph.split("\\s+")) {
-                String candidate = line.isEmpty() ? word : line + " " + word;
-                if (font.getStringWidth(candidate) / 1000 * fontSize > width && !line.isEmpty()) {
-                    lines.add(line.toString());
-                    line = new StringBuilder(word);
-                } else {
-                    line = new StringBuilder(candidate);
+            for (int offset = 0; offset < paragraph.length();) {
+                int codePoint = paragraph.codePointAt(offset);
+                offset += Character.charCount(codePoint);
+                String character = Character.isWhitespace(codePoint)
+                        ? " "
+                        : new String(Character.toChars(codePoint));
+                if (line.isEmpty() && character.isBlank()) {
+                    continue;
                 }
+
+                String candidate = line + character;
+                if (!line.isEmpty() && textWidth(candidate, font, fontSize) > width) {
+                    lines.add(line.toString().stripTrailing());
+                    line.setLength(0);
+                    if (character.isBlank()) {
+                        continue;
+                    }
+                }
+                line.append(character);
             }
-            lines.add(line.toString());
+            lines.add(line.toString().stripTrailing());
         }
         return lines;
     }
 
-    private String safeForFont(PDFont font, String content) {
-        if (!(font instanceof PDType1Font)) {
-            return content;
+    private float textWidth(String text, PDFont font, float fontSize) throws Exception {
+        return font.getStringWidth(text) / 1000 * fontSize;
+    }
+
+    /**
+     * PDFBox throws when a font cannot encode a glyph. Preserve normal CJK
+     * text and replace only unsupported characters (typically emoji) so one
+     * uncommon glyph cannot abort the whole PDF generation task.
+     */
+    private String sanitizeForFont(PDFont font, String content) {
+        String safeContent = content == null ? "" : content;
+        StringBuilder result = new StringBuilder(safeContent.length());
+        for (int offset = 0; offset < safeContent.length();) {
+            int codePoint = safeContent.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            if (codePoint == '\r') {
+                continue;
+            }
+            if (codePoint == '\n') {
+                result.append('\n');
+                continue;
+            }
+            if (codePoint == '\t' || Character.isISOControl(codePoint)) {
+                result.append(' ');
+                continue;
+            }
+
+            String character = new String(Character.toChars(codePoint));
+            try {
+                font.getStringWidth(character);
+                result.append(character);
+            } catch (Exception unsupportedGlyph) {
+                result.append('?');
+            }
         }
-        return content.chars()
-                .mapToObj(ch -> ch <= 0x7F ? String.valueOf((char) ch) : "?")
-                .reduce("", String::concat);
+        return result.toString();
     }
 }

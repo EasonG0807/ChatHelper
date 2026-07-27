@@ -12,6 +12,7 @@ target/
 
 ### Local uploads / user data ###
 uploads/
+data/agent-workspace/
 
 ### Local documents/artifacts ###
 *.docx

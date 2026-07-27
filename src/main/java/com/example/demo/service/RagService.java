@@ -34,6 +34,7 @@ public class RagService {
     private final DocumentChunkRepository chunkRepo;
     private final ElasticsearchOperations elasticsearchOperations;
     private final SpringAiService springAiService;
+    private final RerankService rerankService;
 
     @Value("${rag.retrieval.vector-topk:20}")
     private int vectorTopK;
@@ -59,6 +60,9 @@ public class RagService {
     @Value("${rag.retrieval.rerank.enabled:true}")
     private boolean rerankEnabled;
 
+    @Value("${rag.retrieval.rerank.api.candidate-limit:12}")
+    private int rerankCandidateLimit;
+
     public List<Double> embedding(String text) {
         return springAiService.embedding(text);
     }
@@ -79,7 +83,10 @@ public class RagService {
                 ? weightedFuse(vectorHits, bm25Hits, vectorWeight, bm25Weight)
                 : rrfFuse(vectorHits, bm25Hits, rrfK);
 
-        if (rerankEnabled) {
+        List<RankedChunk> apiReranked = apiRerank(question, fused);
+        if (apiReranked != null) {
+            fused = apiReranked;
+        } else if (rerankEnabled) {
             fused = lightweightRerank(fused);
         }
 
@@ -183,6 +190,35 @@ public class RagService {
         List<RankedChunk> result = new ArrayList<>();
         for (int i = 0; i < sorted.size(); i++) {
             result.add(sorted.get(i).toRankedChunk(i + 1));
+        }
+        return result;
+    }
+
+    /**
+     * Cross-encoder rerank of the fusion candidates through the rerank API.
+     * Returns null when the API is disabled or fails, so the caller can fall
+     * back to the fusion ordering. Candidates beyond the limit keep their
+     * fusion order behind the reranked head.
+     */
+    private List<RankedChunk> apiRerank(String question, List<RankedChunk> fused) {
+        if (!rerankService.isEnabled() || fused.isEmpty()) {
+            return null;
+        }
+        List<RankedChunk> candidates = fused.stream()
+                .limit(Math.max(1, rerankCandidateLimit))
+                .toList();
+        List<RerankService.RerankHit> hits = rerankService.rerank(
+                question,
+                candidates.stream().map(RankedChunk::text).toList());
+        if (hits.isEmpty()) {
+            return null;
+        }
+        List<RankedChunk> result = new ArrayList<>();
+        for (RerankService.RerankHit hit : hits) {
+            result.add(candidates.get(hit.index()).withScore(hit.relevanceScore()));
+        }
+        if (fused.size() > candidates.size()) {
+            result.addAll(fused.subList(candidates.size(), fused.size()));
         }
         return result;
     }

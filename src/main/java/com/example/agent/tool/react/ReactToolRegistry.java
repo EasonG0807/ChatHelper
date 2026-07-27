@@ -51,34 +51,21 @@ public class ReactToolRegistry {
     }
 
     public Optional<ReactTool> find(String name) {
-        return find(name, Set.of());
-    }
-
-    public Optional<ReactTool> find(String name, Set<String> allowedToolNames) {
         ReactTool tool = tools.get(name);
-        if (tool == null || !isAllowedBySkill(name, allowedToolNames) || !isEnabled(name)) {
+        if (tool == null || !isEnabled(name)) {
             return Optional.empty();
         }
         return Optional.of(tool);
     }
 
     public List<ReactTool> list() {
-        return list(Set.of());
-    }
-
-    public List<ReactTool> list(Set<String> allowedToolNames) {
         return tools.values().stream()
-                .filter(tool -> isAllowedBySkill(tool.name(), allowedToolNames))
                 .filter(tool -> isEnabled(tool.name()))
                 .toList();
     }
 
     public String toolDescriptions() {
-        return toolDescriptions(Set.of());
-    }
-
-    public String toolDescriptions(Set<String> allowedToolNames) {
-        return list(allowedToolNames).stream()
+        return list().stream()
                 .map(tool -> """
                         - name: %s
                           source: %s
@@ -86,10 +73,6 @@ public class ReactToolRegistry {
                           parameters: %s
                         """.formatted(tool.name(), tool.source(), tool.description(), tool.parameters()))
                 .collect(Collectors.joining("\n"));
-    }
-
-    private boolean isAllowedBySkill(String toolName, Set<String> allowedToolNames) {
-        return allowedToolNames == null || allowedToolNames.isEmpty() || allowedToolNames.contains(toolName);
     }
 
     private boolean isEnabled(String toolName) {

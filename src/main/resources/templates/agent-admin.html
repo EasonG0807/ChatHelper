@@ -7,15 +7,18 @@
     <link rel="stylesheet" href="/premium.css">
 </head>
 <body>
+
+<div class="app-ambient" aria-hidden="true"><span class="app-glow app-glow-1"></span><span class="app-glow app-glow-2"></span><span class="app-grid"></span></div>
 <div class="agent-admin-shell">
     <header class="agent-admin-header">
         <div>
             <p class="eyebrow">Agent Operations</p>
             <h1>Agent 管理台</h1>
-            <p>发现 MCP 工具、启停工具，并把工具编排到不同 skill 中。</p>
+            <p>发现 MCP 工具并统一启停。技能改由技能库管理，Agent 按任务自动加载。</p>
         </div>
         <div class="agent-admin-actions">
             <a class="btn btn-secondary" href="/agent">返回 Agent</a>
+            <a class="btn btn-secondary" href="/agent/skills">技能库</a>
             <a class="btn" href="/agent/admin">刷新发现</a>
         </div>
     </header>
@@ -66,52 +69,6 @@
             </div>
         </section>
 
-        <section class="agent-admin-panel">
-            <div class="section-heading">
-                <span>Skill 工具编排</span>
-                <small>保存后立即影响新一轮 Agent 执行</small>
-            </div>
-
-            <article th:each="skill : ${skills}" class="agent-admin-skill">
-                <div class="agent-admin-skill-head">
-                    <div>
-                        <h2 th:text="${skill.name}">General Agent</h2>
-                        <p>
-                            <code th:text="${skill.code}">general</code>
-                            <span th:text="'Memory: ' + ${skill.memoryStrategy}">Memory: SUMMARY</span>
-                        </p>
-                    </div>
-                    <form th:if="${skill.code != 'general'}"
-                          th:action="@{/agent/admin/skills/{skillId}/enabled(skillId=${skill.id})}" method="post">
-                        <input type="hidden" name="enabled" th:value="${skill.enabled == null ? true : !skill.enabled}">
-                        <button th:class="${skill.enabled} ? 'btn btn-danger btn-sm' : 'btn btn-success btn-sm'"
-                                type="submit"
-                                th:text="${skill.enabled} ? '停用' : '启用'">切换</button>
-                    </form>
-                    <span th:if="${skill.code == 'general'}" class="badge badge-pending">默认保留</span>
-                </div>
-
-                <p class="agent-admin-skill-desc" th:text="${skill.description}">Skill description</p>
-
-                <form th:action="@{/agent/admin/skills/{skillId}/tools(skillId=${skill.id})}" method="post">
-                    <div class="agent-admin-tool-picker">
-                        <label th:each="tool : ${tools}"
-                               th:class="${tool.enabled} ? 'agent-admin-tool-chip' : 'agent-admin-tool-chip disabled'">
-                            <input type="checkbox"
-                                   name="toolNames"
-                                   th:value="${tool.toolName}"
-                                   th:checked="${skill.allowedTools.contains(tool.toolName)}">
-                            <span th:text="${tool.toolName}">tool_name</span>
-                            <em th:text="${tool.toolSource}">LOCAL</em>
-                        </label>
-                    </div>
-                    <div class="agent-admin-skill-actions">
-                        <button class="btn btn-secondary btn-sm" type="submit">保存工具编排</button>
-                        <small th:text="'当前工具数：' + ${skill.allowedTools.size()}">当前工具数：0</small>
-                    </div>
-                </form>
-            </article>
-        </section>
     </main>
 </div>
 </body>
