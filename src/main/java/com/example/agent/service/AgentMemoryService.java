@@ -2,6 +2,7 @@ package com.example.agent.service;
 
 import com.example.agent.entity.AgentMemory;
 import com.example.agent.repository.AgentMemoryRepository;
+import com.example.agent.repository.AgentSessionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.model.ChatModel;
@@ -37,13 +38,16 @@ public class AgentMemoryService {
     private static final int MAX_MEMORY_CONTENT_LENGTH = 800;
 
     private final AgentMemoryRepository memoryRepository;
+    private final AgentSessionRepository sessionRepository;
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
 
     public AgentMemoryService(AgentMemoryRepository memoryRepository,
+                              AgentSessionRepository sessionRepository,
                               @Qualifier("agentDeepSeekChatModel") ChatModel chatModel,
                               ObjectMapper objectMapper) {
         this.memoryRepository = memoryRepository;
+        this.sessionRepository = sessionRepository;
         this.chatModel = chatModel;
         this.objectMapper = objectMapper;
     }
@@ -62,6 +66,17 @@ public class AgentMemoryService {
             return List.of();
         }
         return memoryRepository.findByUserIdAndActiveTrueOrderByImportanceDescUpdatedAtDesc(userId);
+    }
+
+    /** Returns management-safe views without exposing the owning user id. */
+    public List<MemoryView> listMemoryViews(Long userId) {
+        if (userId == null) {
+            return List.of();
+        }
+        LocalDateTime now = LocalDateTime.now();
+        return memoryRepository.findByUserIdAndActiveTrueOrderByImportanceDescUpdatedAtDesc(userId).stream()
+                .map(memory -> MemoryView.from(memory, now))
+                .toList();
     }
 
     public List<AgentMemory> retrieve(Long userId, Long sessionId, String question, int limit) {
@@ -120,7 +135,75 @@ public class AgentMemoryService {
     @Transactional
     public void clearSessionMemories(Long userId, Long sessionId) {
         if (userId != null && sessionId != null) {
+            if (sessionRepository.findByIdAndUserId(sessionId, userId).isEmpty()) {
+                throw new IllegalArgumentException("会话不存在或无权访问");
+            }
             memoryRepository.deleteByUserIdAndSessionId(userId, sessionId);
+        }
+    }
+
+    @Transactional
+    public MemoryView updateMemory(Long userId, Long memoryId, MemoryUpdate update) {
+        if (userId == null || memoryId == null) {
+            throw new AgentMemoryNotFoundException();
+        }
+        AgentMemory memory = memoryRepository.findByIdAndUserId(memoryId, userId)
+                .orElseThrow(AgentMemoryNotFoundException::new);
+        if (update == null) {
+            throw new IllegalArgumentException("记忆内容不能为空");
+        }
+
+        String type = nullToEmpty(update.memoryType()).trim().toUpperCase(Locale.ROOT);
+        if (!ALLOWED_TYPES.contains(type)) {
+            throw new IllegalArgumentException("不支持的记忆类型");
+        }
+        String content = nullToEmpty(update.content()).trim();
+        if (content.isBlank()) {
+            throw new IllegalArgumentException("记忆内容不能为空");
+        }
+        if (content.length() > MAX_MEMORY_CONTENT_LENGTH) {
+            throw new IllegalArgumentException("记忆内容不能超过 " + MAX_MEMORY_CONTENT_LENGTH + " 个字符");
+        }
+        int importance = update.importance() == null ? 50 : update.importance();
+        if (importance < 0 || importance > 100) {
+            throw new IllegalArgumentException("重要度必须在 0 到 100 之间");
+        }
+
+        String scope = nullToEmpty(update.scope()).trim().toUpperCase(Locale.ROOT);
+        if (!"USER".equals(scope) && !"SESSION".equals(scope)) {
+            throw new IllegalArgumentException("记忆作用域必须是 USER 或 SESSION");
+        }
+        Long targetSessionId = null;
+        if ("SESSION".equals(scope)) {
+            targetSessionId = update.sessionId();
+            if (targetSessionId == null || sessionRepository.findByIdAndUserId(targetSessionId, userId).isEmpty()) {
+                throw new IllegalArgumentException("目标会话不存在或无权访问");
+            }
+        }
+
+        memory.setMemoryType(type);
+        memory.setContent(content);
+        memory.setImportance(importance);
+        memory.setSessionId(targetSessionId);
+        memory.setExpiresAt(update.expiresAt());
+        memory.setActive(true);
+        return MemoryView.from(memoryRepository.save(memory), LocalDateTime.now());
+    }
+
+    @Transactional
+    public void deleteMemory(Long userId, Long memoryId) {
+        if (userId == null || memoryId == null) {
+            throw new AgentMemoryNotFoundException();
+        }
+        AgentMemory memory = memoryRepository.findByIdAndUserId(memoryId, userId)
+                .orElseThrow(AgentMemoryNotFoundException::new);
+        memoryRepository.delete(memory);
+    }
+
+    @Transactional
+    public void clearAllMemories(Long userId) {
+        if (userId != null) {
+            memoryRepository.deleteByUserId(userId);
         }
     }
 
@@ -261,5 +344,50 @@ public class AgentMemoryService {
     }
 
     private record ScoredMemory(AgentMemory memory, double score) {
+    }
+
+    public record MemoryUpdate(String memoryType,
+                               String content,
+                               Integer importance,
+                               String scope,
+                               Long sessionId,
+                               LocalDateTime expiresAt) {
+    }
+
+    public record MemoryView(Long id,
+                             String memoryType,
+                             String content,
+                             String memoryKey,
+                             Integer importance,
+                             Double confidence,
+                             String scope,
+                             Long sessionId,
+                             LocalDateTime expiresAt,
+                             LocalDateTime createdAt,
+                             LocalDateTime updatedAt,
+                             boolean expired) {
+
+        private static MemoryView from(AgentMemory memory, LocalDateTime now) {
+            LocalDateTime expiresAt = memory.getExpiresAt();
+            return new MemoryView(
+                    memory.getId(),
+                    memory.getMemoryType(),
+                    memory.getContent(),
+                    memory.getMemoryKey(),
+                    memory.getImportance(),
+                    memory.getConfidence(),
+                    memory.getSessionId() == null ? "USER" : "SESSION",
+                    memory.getSessionId(),
+                    expiresAt,
+                    memory.getCreatedAt(),
+                    memory.getUpdatedAt(),
+                    expiresAt != null && expiresAt.isBefore(now));
+        }
+    }
+
+    public static class AgentMemoryNotFoundException extends RuntimeException {
+        public AgentMemoryNotFoundException() {
+            super("记忆不存在或无权访问");
+        }
     }
 }

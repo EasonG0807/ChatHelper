@@ -12,7 +12,11 @@ public interface AgentMemoryRepository extends JpaRepository<AgentMemory, Long> 
 
     Optional<AgentMemory> findFirstByUserIdAndMemoryKeyAndActiveTrue(Long userId, String memoryKey);
 
+    Optional<AgentMemory> findByIdAndUserId(Long id, Long userId);
+
     List<AgentMemory> findByUserIdAndSessionIdAndActiveTrueOrderByUpdatedAtDesc(Long userId, Long sessionId);
 
     void deleteByUserIdAndSessionId(Long userId, Long sessionId);
+
+    void deleteByUserId(Long userId);
 }

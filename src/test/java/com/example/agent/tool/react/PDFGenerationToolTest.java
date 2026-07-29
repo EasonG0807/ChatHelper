@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,5 +63,35 @@ class PDFGenerationToolTest {
         assertTrue(Files.isRegularFile(Path.of(second.artifactPath())));
         assertFalse(first.content().contains(tempDir.toString()));
         assertFalse(first.toObservation().contains(tempDir.toString()));
+    }
+
+    @Test
+    void preservesRequestedChineseArtifactFileName() {
+        AgentWorkspaceService workspaceService = new AgentWorkspaceService(tempDir.toString());
+        Path workspace = workspaceService.workspace(1L, 1L);
+        PDFGenerationTool tool = new PDFGenerationTool(workspaceService, "");
+        String requestedName = "项目难点面试回答.pdf";
+
+        ToolExecutionResult result = tool.execute(
+                new ToolExecutionContext(1L, 1L, 1L, workspace),
+                Map.of("title", "项目难点", "content", "中文文件名测试", "fileName", requestedName));
+
+        assertTrue(result.success(), result.errorMessage());
+        Path artifact = Path.of(result.artifactPath());
+        assertEquals(requestedName, artifact.getFileName().toString());
+        assertTrue(Files.isRegularFile(artifact));
+        assertTrue(result.content().contains(requestedName));
+        assertTrue(result.toObservation().contains(requestedName));
+    }
+
+    @Test
+    void keepsUnicodeWhileReplacingUnsafeFileNameCharacters() {
+        AgentWorkspaceService workspaceService = new AgentWorkspaceService(tempDir.toString());
+        Path workspace = workspaceService.workspace(1L, 1L);
+
+        Path artifact = workspaceService.createArtifactPath(workspace, "../项目:答辩?.pdf");
+
+        assertEquals("项目_答辩_.pdf", artifact.getFileName().toString());
+        assertTrue(artifact.normalize().startsWith(workspace.normalize()));
     }
 }

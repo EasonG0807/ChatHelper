@@ -5,15 +5,24 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.text.Normalizer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
 @Service
 @Slf4j
 public class AgentWorkspaceService {
+
+    private static final int MAX_FILE_NAME_LENGTH = 240;
+    private static final Set<String> WINDOWS_RESERVED_NAMES = Set.of(
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9");
 
     private final Path root;
 
@@ -121,12 +130,74 @@ public class AgentWorkspaceService {
         if (value.isBlank()) {
             value = "artifact";
         }
+        value = Normalizer.normalize(value, Normalizer.Form.NFC);
         value = value.replace('\\', '/');
         int slash = value.lastIndexOf('/');
         if (slash >= 0) {
             value = value.substring(slash + 1);
         }
-        value = value.replaceAll("[^a-zA-Z0-9._-]", "_");
-        return value.isBlank() ? "artifact" : value;
+
+        StringBuilder safe = new StringBuilder(value.length());
+        for (int offset = 0; offset < value.length();) {
+            int codePoint = value.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            safe.appendCodePoint(isForbiddenFileNameCodePoint(codePoint) ? '_' : codePoint);
+        }
+        value = trimWindowsTrailingCharacters(safe.toString().trim());
+        if (value.isBlank() || ".".equals(value) || "..".equals(value)) {
+            value = "artifact";
+        }
+        value = truncateFileName(value);
+
+        String baseName = value;
+        int extensionSeparator = value.indexOf('.');
+        if (extensionSeparator >= 0) {
+            baseName = value.substring(0, extensionSeparator);
+        }
+        if (WINDOWS_RESERVED_NAMES.contains(baseName.toUpperCase(Locale.ROOT))) {
+            value = "_" + value;
+        }
+        return value;
+    }
+
+    private boolean isForbiddenFileNameCodePoint(int codePoint) {
+        return Character.isISOControl(codePoint)
+                || codePoint == '<'
+                || codePoint == '>'
+                || codePoint == ':'
+                || codePoint == '"'
+                || codePoint == '/'
+                || codePoint == '\\'
+                || codePoint == '|'
+                || codePoint == '?'
+                || codePoint == '*';
+    }
+
+    private String trimWindowsTrailingCharacters(String value) {
+        int end = value.length();
+        while (end > 0) {
+            char character = value.charAt(end - 1);
+            if (character != ' ' && character != '.') {
+                break;
+            }
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    private String truncateFileName(String value) {
+        if (value.length() <= MAX_FILE_NAME_LENGTH) {
+            return value;
+        }
+        int extensionSeparator = value.lastIndexOf('.');
+        String extension = extensionSeparator > 0 && value.length() - extensionSeparator <= 20
+                ? value.substring(extensionSeparator)
+                : "";
+        int maxBaseLength = MAX_FILE_NAME_LENGTH - extension.length();
+        int end = maxBaseLength;
+        if (end > 0 && Character.isHighSurrogate(value.charAt(end - 1))) {
+            end--;
+        }
+        return value.substring(0, end) + extension;
     }
 }

@@ -52,6 +52,7 @@
             </div>
 
             <div class="agent-side-actions">
+                <button type="button" class="btn btn-secondary" onclick="openMemoryManager()">记忆管理</button>
                 <a href="/agent/admin"><button type="button" class="btn btn-secondary">Agent 管理台</button></a>
                 <a href="/auth/home"><button type="button" class="btn btn-secondary">返回首页</button></a>
             </div>
@@ -163,6 +164,92 @@
     </div>
 </div>
 
+<dialog id="agentMemoryDialog" class="agent-memory-dialog" aria-labelledby="agentMemoryTitle">
+    <div class="agent-memory-shell">
+        <header class="agent-memory-header">
+            <div>
+                <h2 id="agentMemoryTitle">长期记忆管理</h2>
+                <p>查看并管理 Agent 为你保留的偏好、项目事实、决定和待办。</p>
+            </div>
+            <button type="button" class="agent-memory-close" onclick="closeMemoryManager()" aria-label="关闭">✕</button>
+        </header>
+
+        <div class="agent-memory-toolbar">
+            <input id="agentMemorySearch" type="search" placeholder="搜索记忆内容或类型" oninput="renderMemoryList()">
+            <select id="agentMemoryScopeFilter" onchange="renderMemoryList()" aria-label="按作用域筛选">
+                <option value="ALL">全部作用域</option>
+                <option value="USER">跨会话记忆</option>
+                <option value="CURRENT">当前会话</option>
+                <option value="OTHER">其他会话</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="refreshMemories()">刷新</button>
+        </div>
+
+        <div class="agent-memory-summary">
+            <span id="agentMemoryCount">0 条记忆</span>
+            <span id="agentMemoryFeedback" role="status" aria-live="polite"></span>
+        </div>
+        <div id="agentMemoryList" class="agent-memory-list" aria-live="polite"></div>
+
+        <footer class="agent-memory-footer">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="clearCurrentSessionMemories()">清空当前会话记忆</button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="clearAllMemories()">清空全部记忆</button>
+        </footer>
+    </div>
+</dialog>
+
+<dialog id="agentMemoryEditDialog" class="agent-memory-edit-dialog" aria-labelledby="agentMemoryEditTitle">
+    <form id="agentMemoryEditForm" class="agent-memory-edit-form" onsubmit="saveMemoryEdit(event)">
+        <header class="agent-memory-header">
+            <div>
+                <h2 id="agentMemoryEditTitle">编辑记忆</h2>
+                <p>修改后会直接影响后续对话的记忆召回。</p>
+            </div>
+            <button type="button" class="agent-memory-close" onclick="closeMemoryEditor()" aria-label="关闭">✕</button>
+        </header>
+
+        <input id="agentMemoryEditId" type="hidden">
+        <label>
+            <span>类型</span>
+            <select id="agentMemoryEditType" required>
+                <option value="USER_PREFERENCE">用户偏好</option>
+                <option value="PROJECT_FACT">项目事实</option>
+                <option value="DECISION">已做决定</option>
+                <option value="TODO">待办事项</option>
+                <option value="CONSTRAINT">约束条件</option>
+                <option value="EPISODIC">重要经历</option>
+            </select>
+        </label>
+        <label>
+            <span>记忆内容</span>
+            <textarea id="agentMemoryEditContent" maxlength="800" required></textarea>
+            <small id="agentMemoryContentCount">0 / 800</small>
+        </label>
+        <label>
+            <span>重要度：<output id="agentMemoryImportanceOutput">50</output></span>
+            <input id="agentMemoryEditImportance" type="range" min="0" max="100" value="50"
+                   oninput="document.getElementById('agentMemoryImportanceOutput').value=this.value">
+        </label>
+        <label>
+            <span>作用域</span>
+            <select id="agentMemoryEditScope" required>
+                <option value="USER">跨会话（用户级）</option>
+                <option value="SESSION">仅所属会话</option>
+            </select>
+        </label>
+        <label>
+            <span>过期时间</span>
+            <input id="agentMemoryEditExpiresAt" type="datetime-local">
+            <small>留空表示永不过期。</small>
+        </label>
+        <div id="agentMemoryEditFeedback" class="agent-memory-edit-feedback" role="alert"></div>
+        <footer class="agent-memory-edit-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeMemoryEditor()">取消</button>
+            <button id="agentMemorySaveButton" type="submit" class="btn">保存修改</button>
+        </footer>
+    </form>
+</dialog>
+
 <input type="hidden" id="agentSessionId" th:value="${activeSession.id}">
 
 <script>
@@ -170,6 +257,8 @@
     let agentEventSource = null;
     let selectedAgentImageFile = null;
     let artifactRefreshSequence = 0;
+    let agentMemories = [];
+    let editingMemory = null;
 
     document.addEventListener("DOMContentLoaded", function () {
         document.querySelectorAll(".markdown-content").forEach(el => {
@@ -178,6 +267,7 @@
         hydrateArtifactLinks(document.getElementById("agentArtifactList"));
         updateArtifactCount();
         scrollChatToBottom();
+        document.getElementById("agentMemoryEditContent").addEventListener("input", updateMemoryContentCount);
     });
 
     function fillPrompt(text) {
@@ -269,6 +359,9 @@
                 agentEventSource = null;
                 refreshSteps();
                 refreshArtifacts();
+                if (document.getElementById("agentMemoryDialog").open) {
+                    window.setTimeout(refreshMemories, 1200);
+                }
                 return;
             }
             if (event.data.startsWith("@@STEP@@")) {
@@ -617,6 +710,271 @@
                 response.text().then(message => alert(message));
             }
         });
+    }
+
+    function openMemoryManager() {
+        const dialog = document.getElementById("agentMemoryDialog");
+        if (!dialog.open) dialog.showModal();
+        refreshMemories();
+    }
+
+    function closeMemoryManager() {
+        const dialog = document.getElementById("agentMemoryDialog");
+        if (dialog.open) dialog.close();
+    }
+
+    async function memoryApi(url, options) {
+        const response = await fetch(url, options || { headers: { "Accept": "application/json" } });
+        if (response.status === 401) {
+            window.location.assign("/auth/login");
+            throw new Error("登录状态已失效");
+        }
+        const contentType = response.headers.get("content-type") || "";
+        const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+        if (!response.ok) {
+            const message = payload && typeof payload === "object" ? payload.message : payload;
+            throw new Error(message || "记忆操作失败");
+        }
+        return payload;
+    }
+
+    async function refreshMemories() {
+        setMemoryFeedback("正在加载…", false);
+        try {
+            const memories = await memoryApi("/agent/memories", { headers: { "Accept": "application/json" } });
+            agentMemories = Array.isArray(memories) ? memories : [];
+            renderMemoryList();
+            setMemoryFeedback("", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "记忆列表加载失败", true);
+        }
+    }
+
+    function renderMemoryList() {
+        const list = document.getElementById("agentMemoryList");
+        const query = document.getElementById("agentMemorySearch").value.trim().toLowerCase();
+        const scopeFilter = document.getElementById("agentMemoryScopeFilter").value;
+        const currentSessionId = String(document.getElementById("agentSessionId").value);
+        const filtered = agentMemories.filter(memory => {
+            const searchable = `${memory.memoryType || ""} ${memory.content || ""} ${memory.memoryKey || ""}`.toLowerCase();
+            if (query && !searchable.includes(query)) return false;
+            if (scopeFilter === "USER" && memory.scope !== "USER") return false;
+            if (scopeFilter === "CURRENT" && String(memory.sessionId || "") !== currentSessionId) return false;
+            if (scopeFilter === "OTHER" && (memory.scope !== "SESSION" || String(memory.sessionId || "") === currentSessionId)) return false;
+            return true;
+        });
+
+        const fragment = document.createDocumentFragment();
+        filtered.forEach(memory => fragment.appendChild(renderMemoryCard(memory, currentSessionId)));
+        list.replaceChildren(fragment);
+        if (!list.hasChildNodes()) {
+            const empty = document.createElement("div");
+            empty.className = "agent-memory-empty";
+            empty.textContent = agentMemories.length === 0
+                ? "暂时没有长期记忆。完成对话后，Agent 会自动提取稳定且有用的信息。"
+                : "没有符合当前筛选条件的记忆。";
+            list.appendChild(empty);
+        }
+        document.getElementById("agentMemoryCount").textContent = `${filtered.length} / ${agentMemories.length} 条记忆`;
+    }
+
+    function renderMemoryCard(memory, currentSessionId) {
+        const card = document.createElement("article");
+        card.className = `agent-memory-card${memory.expired ? " expired" : ""}`;
+        card.dataset.memoryId = String(memory.id);
+
+        const header = document.createElement("div");
+        header.className = "agent-memory-card-header";
+        const badges = document.createElement("div");
+        badges.className = "agent-memory-badges";
+        badges.appendChild(memoryBadge(memoryTypeLabel(memory.memoryType), "type"));
+        const isCurrent = memory.scope === "SESSION" && String(memory.sessionId) === currentSessionId;
+        const scopeText = memory.scope === "USER" ? "跨会话" : (isCurrent ? "当前会话" : `会话 #${memory.sessionId}`);
+        badges.appendChild(memoryBadge(scopeText, "scope"));
+        if (memory.expired) badges.appendChild(memoryBadge("已过期", "expired"));
+        header.appendChild(badges);
+
+        const actions = document.createElement("div");
+        actions.className = "agent-memory-card-actions";
+        const editButton = document.createElement("button");
+        editButton.type = "button";
+        editButton.textContent = "编辑";
+        editButton.onclick = () => openMemoryEditor(memory.id);
+        const deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "danger";
+        deleteButton.textContent = "删除";
+        deleteButton.onclick = () => deleteMemory(memory.id);
+        actions.append(editButton, deleteButton);
+        header.appendChild(actions);
+        card.appendChild(header);
+
+        const content = document.createElement("p");
+        content.className = "agent-memory-content";
+        content.textContent = memory.content || "";
+        card.appendChild(content);
+
+        const meta = document.createElement("div");
+        meta.className = "agent-memory-meta";
+        const confidence = Number(memory.confidence);
+        const values = [
+            `重要度 ${Number(memory.importance) || 0}`,
+            Number.isFinite(confidence) ? `置信度 ${Math.round(confidence * 100)}%` : "",
+            memory.expiresAt ? `过期 ${formatMemoryDate(memory.expiresAt)}` : "永不过期",
+            memory.updatedAt ? `更新 ${formatMemoryDate(memory.updatedAt)}` : ""
+        ];
+        values.filter(Boolean).forEach(value => {
+            const span = document.createElement("span");
+            span.textContent = value;
+            meta.appendChild(span);
+        });
+        card.appendChild(meta);
+        return card;
+    }
+
+    function memoryBadge(text, kind) {
+        const badge = document.createElement("span");
+        badge.className = `agent-memory-badge ${kind || ""}`;
+        badge.textContent = text;
+        return badge;
+    }
+
+    function memoryTypeLabel(type) {
+        const labels = {
+            USER_PREFERENCE: "用户偏好",
+            PROJECT_FACT: "项目事实",
+            DECISION: "已做决定",
+            TODO: "待办事项",
+            CONSTRAINT: "约束条件",
+            EPISODIC: "重要经历"
+        };
+        return labels[type] || type || "未分类";
+    }
+
+    function formatMemoryDate(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return String(value).slice(0, 16).replace("T", " ");
+        return new Intl.DateTimeFormat("zh-CN", {
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", hour12: false
+        }).format(date);
+    }
+
+    function setMemoryFeedback(message, isError) {
+        const feedback = document.getElementById("agentMemoryFeedback");
+        feedback.textContent = message || "";
+        feedback.classList.toggle("error", Boolean(isError));
+    }
+
+    function openMemoryEditor(memoryId) {
+        const memory = agentMemories.find(item => String(item.id) === String(memoryId));
+        if (!memory) return;
+        editingMemory = memory;
+        document.getElementById("agentMemoryEditId").value = memory.id;
+        document.getElementById("agentMemoryEditType").value = memory.memoryType;
+        document.getElementById("agentMemoryEditContent").value = memory.content || "";
+        document.getElementById("agentMemoryEditImportance").value = memory.importance == null ? 50 : memory.importance;
+        document.getElementById("agentMemoryImportanceOutput").value = memory.importance == null ? 50 : memory.importance;
+        document.getElementById("agentMemoryEditScope").value = memory.scope || "SESSION";
+        document.getElementById("agentMemoryEditExpiresAt").value = memory.expiresAt ? String(memory.expiresAt).slice(0, 16) : "";
+        document.getElementById("agentMemoryEditFeedback").textContent = "";
+        updateMemoryContentCount();
+        const dialog = document.getElementById("agentMemoryEditDialog");
+        if (!dialog.open) dialog.showModal();
+    }
+
+    function closeMemoryEditor() {
+        const dialog = document.getElementById("agentMemoryEditDialog");
+        if (dialog.open) dialog.close();
+        editingMemory = null;
+    }
+
+    function updateMemoryContentCount() {
+        const content = document.getElementById("agentMemoryEditContent").value;
+        document.getElementById("agentMemoryContentCount").textContent = `${content.length} / 800`;
+    }
+
+    async function saveMemoryEdit(event) {
+        event.preventDefault();
+        if (!editingMemory) return;
+        const button = document.getElementById("agentMemorySaveButton");
+        const scope = document.getElementById("agentMemoryEditScope").value;
+        const expiresAt = document.getElementById("agentMemoryEditExpiresAt").value;
+        const currentSessionId = Number(document.getElementById("agentSessionId").value);
+        const payload = {
+            memoryType: document.getElementById("agentMemoryEditType").value,
+            content: document.getElementById("agentMemoryEditContent").value.trim(),
+            importance: Number(document.getElementById("agentMemoryEditImportance").value),
+            scope,
+            sessionId: scope === "SESSION" ? (editingMemory.sessionId || currentSessionId) : null,
+            expiresAt: expiresAt || null
+        };
+
+        button.disabled = true;
+        document.getElementById("agentMemoryEditFeedback").textContent = "";
+        try {
+            const updated = await memoryApi(`/agent/memories/${encodeURIComponent(editingMemory.id)}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            agentMemories = agentMemories.map(item => String(item.id) === String(updated.id) ? updated : item);
+            closeMemoryEditor();
+            renderMemoryList();
+            setMemoryFeedback("记忆已更新", false);
+        } catch (error) {
+            document.getElementById("agentMemoryEditFeedback").textContent = error.message || "保存失败";
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function deleteMemory(memoryId) {
+        const memory = agentMemories.find(item => String(item.id) === String(memoryId));
+        if (!memory || !confirm(`确认删除这条记忆？\n\n${String(memory.content || "").slice(0, 120)}`)) return;
+        try {
+            await memoryApi(`/agent/memories/${encodeURIComponent(memoryId)}`, {
+                method: "DELETE",
+                headers: { "Accept": "application/json" }
+            });
+            agentMemories = agentMemories.filter(item => String(item.id) !== String(memoryId));
+            renderMemoryList();
+            setMemoryFeedback("记忆已删除", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "删除失败", true);
+        }
+    }
+
+    async function clearCurrentSessionMemories() {
+        if (!confirm("确认清空当前会话范围内的全部长期记忆？\n跨会话记忆不会被删除。")) return;
+        const sessionId = document.getElementById("agentSessionId").value;
+        try {
+            await memoryApi("/agent/memories/clear", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json" },
+                body: new URLSearchParams({ sessionId })
+            });
+            await refreshMemories();
+            setMemoryFeedback("当前会话记忆已清空", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "清空失败", true);
+        }
+    }
+
+    async function clearAllMemories() {
+        if (!confirm("确认清空你的全部长期记忆？\n\n这会删除跨会话记忆及所有会话记忆，且无法恢复。聊天记录不会被删除。")) return;
+        try {
+            await memoryApi("/agent/memories/clear-all", {
+                method: "POST",
+                headers: { "Accept": "application/json" }
+            });
+            agentMemories = [];
+            renderMemoryList();
+            setMemoryFeedback("全部长期记忆已清空", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "清空失败", true);
+        }
     }
 
     function scrollChatToBottom() {

@@ -157,27 +157,6 @@ public class AgentController {
         return ResponseEntity.ok(stepService.listSteps(session.getId()));
     }
 
-    @GetMapping("/memories")
-    @ResponseBody
-    public ResponseEntity<?> memories(HttpSession httpSession) {
-        Long userId = (Long) httpSession.getAttribute("uid");
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Please login first.");
-        }
-        return ResponseEntity.ok(memoryService.listActiveMemories(userId));
-    }
-
-    @PostMapping("/memories/clear")
-    @ResponseBody
-    public ResponseEntity<String> clearMemories(@RequestParam Long sessionId, HttpSession httpSession) {
-        Long userId = (Long) httpSession.getAttribute("uid");
-        if (userId == null) {
-            return ResponseEntity.status(401).body("Please login first.");
-        }
-        memoryService.clearSessionMemories(userId, sessionId);
-        return ResponseEntity.ok("Session memories cleared.");
-    }
-
     @GetMapping("/admin")
     public String admin(HttpSession httpSession, Model model) {
         Long userId = (Long) httpSession.getAttribute("uid");
