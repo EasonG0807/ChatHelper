@@ -52,11 +52,22 @@ public class AgentArtifactService {
             throw new IllegalArgumentException("Artifact must be a regular file inside the session workspace.");
         }
 
+        String storedToolName = limit(toolName, 120);
+        String storedRelativePath = workspaceService.toStoredRelativePath(realWorkspace, realArtifact);
+        AgentArtifact existing = artifactRepository
+                .findFirstByUserIdAndSessionIdAndMessageIdAndToolNameAndRelativePath(
+                        context.userId(), context.sessionId(), context.messageId(),
+                        storedToolName, storedRelativePath)
+                .orElse(null);
+        if (existing != null) {
+            return toView(existing);
+        }
+
         AgentArtifact artifact = new AgentArtifact();
         artifact.setUserId(context.userId());
         artifact.setSessionId(context.sessionId());
         artifact.setMessageId(context.messageId());
-        artifact.setToolName(limit(toolName, 120));
+        artifact.setToolName(storedToolName);
         artifact.setFileName(limit(realArtifact.getFileName().toString(), 255));
         artifact.setContentType(detectContentType(realArtifact));
         try {
@@ -64,7 +75,7 @@ public class AgentArtifactService {
         } catch (IOException ex) {
             throw new IllegalArgumentException("Failed to read artifact size.", ex);
         }
-        artifact.setRelativePath(workspaceService.toStoredRelativePath(realWorkspace, realArtifact));
+        artifact.setRelativePath(storedRelativePath);
         return toView(artifactRepository.save(artifact));
     }
 

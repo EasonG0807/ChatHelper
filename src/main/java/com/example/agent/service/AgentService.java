@@ -60,9 +60,22 @@ public class AgentService {
         StringBuilder answer = new StringBuilder();
         return reactAgentExecutor
                 .executeStream(userId, session.getId(), userMessage.getId(), contextualQuestion, history)
-                .doOnNext(chunk -> {
-                    if (!chunk.startsWith(ReActAgentExecutor.STEP_EVENT_PREFIX)) {
-                        answer.append(chunk);
+                .doOnNext(event -> {
+                    String delta = reactAgentExecutor.answerDeltaText(event);
+                    if (delta != null) {
+                        answer.append(delta);
+                    }
+                    String finalMarkdown = reactAgentExecutor.answerFinalMarkdown(event);
+                    if (finalMarkdown != null) {
+                        // answer-final is authoritative and repairs any
+                        // incomplete or duplicated transport chunks.
+                        answer.setLength(0);
+                        answer.append(finalMarkdown);
+                    }
+                    if (!ReActAgentExecutor.isStructuredEvent(event)) {
+                        // Backward-compatible fallback for a plain-text error
+                        // or a legacy executor event.
+                        answer.append(event);
                     }
                 })
                 .concatWith(Flux.defer(() -> {
@@ -76,7 +89,10 @@ public class AgentService {
                 }))
                 .onErrorResume(error -> {
                     stepService.recordError(session.getId(), userMessage.getId(), error.getMessage());
-                    return Flux.just("Agent execution failed: " + error.getMessage(), "[DONE]");
+                    return Flux.just(
+                            reactAgentExecutor.terminalErrorEvent(userMessage.getId(), error.getMessage()),
+                            "Agent execution failed: " + error.getMessage(),
+                            "[DONE]");
                 });
     }
 }

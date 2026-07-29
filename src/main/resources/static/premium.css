@@ -2781,3 +2781,147 @@ tbody tr:hover {
 .agent-step-live {
   border-left: 2px solid rgba(98, 228, 255, .55);
 }
+
+.agent-run {
+  width: min(760px, 92%);
+  max-width: min(760px, 92%) !important;
+}
+
+.agent-run-progress {
+  border: 1px solid rgba(126, 162, 255, .2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(4, 8, 20, .28);
+}
+
+.agent-run-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-run-progress-header strong {
+  color: #ecf2ff;
+  font-size: 13px;
+}
+
+.agent-run-progress-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-run-stage {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.agent-run-stage-index {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(126, 162, 255, .35);
+  border-radius: 50%;
+  color: var(--primary-2);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.agent-run-stage-body {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agent-run-stage-title {
+  overflow: hidden;
+  color: #dce7ff;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-run-stage-status {
+  flex: 0 0 auto;
+  color: var(--primary-2);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.agent-run-stage[data-status="RUNNING"] .agent-run-stage-index {
+  animation: agentStatusPulse 1.1s ease-in-out infinite;
+  background: rgba(98, 228, 255, .12);
+}
+
+.agent-run-stage[data-status="SUCCESS"] .agent-run-stage-index,
+.agent-run-stage[data-status="SUCCESS"] .agent-run-stage-status {
+  color: var(--success);
+  border-color: rgba(87, 231, 174, .4);
+}
+
+.agent-run-stage[data-status="ERROR"] .agent-run-stage-index,
+.agent-run-stage[data-status="ERROR"] .agent-run-stage-status {
+  color: var(--danger);
+  border-color: rgba(255, 112, 135, .45);
+}
+
+.agent-run-progress.is-complete {
+  border-color: rgba(87, 231, 174, .22);
+}
+
+.agent-run-progress.is-error {
+  border-color: rgba(255, 112, 135, .28);
+}
+
+.agent-run-progress.is-warning {
+  border-color: rgba(255, 198, 92, .3);
+}
+
+.agent-run-answer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(126, 162, 255, .18);
+}
+
+.agent-run-answer[hidden] {
+  display: none;
+}
+
+.agent-run-answer > :first-child {
+  margin-top: 0;
+}
+
+.agent-run-answer > :last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 640px) {
+  .agent-run {
+    width: 100%;
+    max-width: 100% !important;
+  }
+
+  .agent-run-progress-header,
+  .agent-run-stage-body {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .agent-run-stage-title {
+    white-space: normal;
+  }
+}

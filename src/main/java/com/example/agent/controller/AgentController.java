@@ -15,6 +15,7 @@ import com.example.agent.tool.AgentToolRegistry;
 import com.example.agent.tool.react.AgentWorkspaceService;
 import com.example.demo.service.ImageQuestionContext;
 import com.example.demo.service.ImageQuestionContextService;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +32,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import reactor.core.publisher.Flux;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -104,7 +106,11 @@ public class AgentController {
     public Flux<String> ask(@RequestParam Long sessionId,
                             @RequestParam String question,
                             @RequestParam(required = false) String imageContextId,
-                            HttpSession httpSession) {
+                            HttpSession httpSession,
+                            HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-cache, no-transform");
+        response.setHeader("X-Accel-Buffering", "no");
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         Long userId = (Long) httpSession.getAttribute("uid");
         if (userId == null) {
             return Flux.just("Please login first.", "[DONE]");
@@ -115,16 +121,17 @@ public class AgentController {
     }
 
     /**
-     * SSE frames treat newlines as protocol delimiters, so multi-line answer
-     * chunks must travel as single-line escaped text. Step frames are already
-     * single-line JSON and [DONE] is a bare marker; both pass through as-is.
-     * The client reverses this escaping before rendering markdown.
+     * Structured progress/answer/heartbeat frames are JSON and already safe
+     * for SSE transport. Plain chunks are retained only as a rolling-deploy
+     * compatibility path and still need newline escaping.
      */
     private String escapeSseChunk(String chunk) {
-        if (chunk.startsWith(ReActAgentExecutor.STEP_EVENT_PREFIX) || "[DONE]".equals(chunk)) {
+        if (ReActAgentExecutor.isStructuredEvent(chunk) || "[DONE]".equals(chunk)) {
             return chunk;
         }
-        return chunk.replace("\\", "\\\\").replace("\n", "\\n");
+        return chunk.replace("\\", "\\\\")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
     }
 
     @PostMapping("/image-context")

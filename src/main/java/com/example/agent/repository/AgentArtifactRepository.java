@@ -12,5 +12,8 @@ public interface AgentArtifactRepository extends JpaRepository<AgentArtifact, Lo
 
     Optional<AgentArtifact> findByIdAndUserId(Long id, Long userId);
 
+    Optional<AgentArtifact> findFirstByUserIdAndSessionIdAndMessageIdAndToolNameAndRelativePath(
+            Long userId, Long sessionId, Long messageId, String toolName, String relativePath);
+
     void deleteBySessionId(Long sessionId);
 }

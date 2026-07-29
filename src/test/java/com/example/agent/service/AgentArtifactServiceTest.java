@@ -95,6 +95,26 @@ class AgentArtifactServiceTest {
     }
 
     @Test
+    void reusesMetadataWhenTheSameArtifactPathIsRegisteredAgain() throws Exception {
+        Path workspace = workspaceService.workspace(1L, 10L);
+        Path file = workspaceService.createIdempotentArtifactPath(workspace, "report.pdf", "request-20");
+        Files.createDirectories(file.getParent());
+        Files.write(file, new byte[]{1, 2, 3});
+        String relativePath = workspaceService.toStoredRelativePath(workspace.toRealPath(), file.toRealPath());
+
+        AgentArtifact existing = artifact(42L);
+        existing.setRelativePath(relativePath);
+        when(artifactRepository.findFirstByUserIdAndSessionIdAndMessageIdAndToolNameAndRelativePath(
+                1L, 10L, 20L, "pdf_generation", relativePath)).thenReturn(Optional.of(existing));
+
+        AgentArtifactService.ArtifactView view = service.register(
+                new ToolExecutionContext(1L, 10L, 20L, workspace), "pdf_generation", file.toString());
+
+        assertEquals(42L, view.id());
+        verify(artifactRepository, never()).save(any());
+    }
+
+    @Test
     void hidesOtherUsersArtifactsAsNotFound() {
         when(artifactRepository.findByIdAndUserId(42L, 2L)).thenReturn(Optional.empty());
 
@@ -103,16 +123,23 @@ class AgentArtifactServiceTest {
 
     @Test
     void returnsNotFoundWhenMetadataFileIsMissing() {
-        AgentArtifact artifact = new AgentArtifact();
-        artifact.setId(42L);
-        artifact.setUserId(1L);
-        artifact.setSessionId(10L);
-        artifact.setFileName("missing.pdf");
-        artifact.setContentType("application/pdf");
-        artifact.setSizeBytes(123L);
+        AgentArtifact artifact = artifact(42L);
         artifact.setRelativePath("artifacts/does-not-exist/missing.pdf");
         when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
 
         assertThrows(AgentArtifactNotFoundException.class, () -> service.openOwned(1L, 42L));
+    }
+
+    private AgentArtifact artifact(Long id) {
+        AgentArtifact artifact = new AgentArtifact();
+        artifact.setId(id);
+        artifact.setUserId(1L);
+        artifact.setSessionId(10L);
+        artifact.setMessageId(20L);
+        artifact.setToolName("pdf_generation");
+        artifact.setFileName("missing.pdf");
+        artifact.setContentType("application/pdf");
+        artifact.setSizeBytes(123L);
+        return artifact;
     }
 }

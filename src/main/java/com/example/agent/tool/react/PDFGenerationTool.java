@@ -14,14 +14,18 @@ import org.springframework.stereotype.Component;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Component
 public class PDFGenerationTool implements ReactTool {
 
     private static final String BUNDLED_FONT_PATH = "fonts/simhei.ttf";
+    private static final Object[] GENERATION_LOCKS = createGenerationLocks();
 
     private final AgentWorkspaceService workspaceService;
     private final String fontPath;
@@ -49,7 +53,8 @@ public class PDFGenerationTool implements ReactTool {
                 {
                   "title": "string, optional",
                   "content": "string, required",
-                  "fileName": "string, required, should end with .pdf"
+                  "fileName": "string, required, should end with .pdf",
+                  "allowDuplicate": "boolean, optional, default false; true only when the user explicitly requests multiple PDFs with the same material"
                 }
                 """;
     }
@@ -69,16 +74,53 @@ public class PDFGenerationTool implements ReactTool {
             fileName = fileName + ".pdf";
         }
 
+        String safeFileName = workspaceService.artifactFileName(fileName);
+        String idempotencyKey = context.messageId() == null
+                ? null
+                : "pdf_generation:" + context.messageId() + ":" + safeFileName.toLowerCase(Locale.ROOT);
+        Path target = workspaceService.createIdempotentArtifactPath(
+                context.workspaceRoot(), safeFileName, idempotencyKey);
+
+        Object generationLock = GENERATION_LOCKS[Math.floorMod(target.hashCode(), GENERATION_LOCKS.length)];
+        synchronized (generationLock) {
+            try {
+                if (Files.isRegularFile(target) && Files.size(target) > 0) {
+                    return ToolExecutionResult.success(
+                            "PDF already generated for this request; reused: " + target.getFileName(),
+                            target.toString());
+                }
+                generateAtomically(target, title, content);
+                return ToolExecutionResult.success("PDF generated: " + target.getFileName(), target.toString());
+            } catch (Exception ex) {
+                return ToolExecutionResult.failure("PDF generation failed: " + ex.getMessage());
+            }
+        }
+    }
+
+    private void generateAtomically(Path target, String title, String content) throws Exception {
+        Files.createDirectories(target.getParent());
+        Path temporary = Files.createTempFile(target.getParent(), ".pdf-generation-", ".tmp");
         try (PDDocument document = new PDDocument()) {
             PDFont font = loadFont(document);
-            Path target = workspaceService.createArtifactPath(context.workspaceRoot(), fileName);
-            Files.createDirectories(target.getParent());
             writePages(document, font, title, content);
-            document.save(target.toFile());
-            return ToolExecutionResult.success("PDF generated: " + target.getFileName(), target.toString());
+            document.save(temporary.toFile());
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (Exception ex) {
-            return ToolExecutionResult.failure("PDF generation failed: " + ex.getMessage());
+            Files.deleteIfExists(temporary);
+            throw ex;
         }
+    }
+
+    private static Object[] createGenerationLocks() {
+        Object[] locks = new Object[64];
+        for (int index = 0; index < locks.length; index++) {
+            locks[index] = new Object();
+        }
+        return locks;
     }
 
     private PDFont loadFont(PDDocument document) {

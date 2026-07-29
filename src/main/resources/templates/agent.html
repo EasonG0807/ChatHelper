@@ -143,21 +143,70 @@
             </section>
 
             <section class="agent-call-chain-section" aria-labelledby="agentCallChainTitle">
-                <div class="agent-panel-header">
-                    <h2 id="agentCallChainTitle">调用链</h2>
-                    <p>Plan / Tool Call / Tool Result / Final</p>
+                <div class="agent-panel-header agent-chain-header">
+                    <div>
+                        <h2 id="agentCallChainTitle">调用链</h2>
+                        <p>实时追踪规划、工具执行与最终输出</p>
+                    </div>
+                    <span class="agent-chain-live"><i aria-hidden="true"></i>实时</span>
+                </div>
+                <div class="agent-chain-legend" aria-label="调用链阶段说明">
+                    <span><i data-kind="PLAN" aria-hidden="true"></i>规划</span>
+                    <span><i data-kind="TOOL_CALL" aria-hidden="true"></i>工具</span>
+                    <span><i data-kind="FINAL" aria-hidden="true"></i>输出</span>
                 </div>
                 <div id="agentStepList" class="agent-step-list">
-                    <div th:each="step : ${steps}" class="agent-step">
-                        <div class="agent-step-title">
-                            <span th:text="${step.stepIndex + '. ' + step.stepType}">1. PLAN</span>
-                            <em th:text="${step.status}">SUCCESS</em>
-                        </div>
-                        <div class="agent-step-tool" th:text="${step.toolSource + ' / ' + step.toolName}">LOCAL / rag_search</div>
-                        <pre th:if="${step.toolArguments != null}" th:text="${step.toolArguments}"></pre>
-                        <pre th:if="${step.toolResult != null}" th:text="${step.toolResult}"></pre>
-                        <pre th:if="${step.errorMessage != null}" th:text="${step.errorMessage}"></pre>
+                    <div th:if="${#lists.isEmpty(steps)}" class="agent-chain-empty">
+                        <span aria-hidden="true">⌁</span>
+                        <strong>等待任务开始</strong>
+                        <small>Agent 的规划和工具调用会实时显示在这里</small>
                     </div>
+                    <article th:each="step : ${steps}"
+                             class="agent-step"
+                             th:attr="data-step-id=${step.id},data-step-type=${step.stepType},data-status=${step.status}">
+                        <div class="agent-step-rail" aria-hidden="true">
+                            <span class="agent-step-node" th:text="${step.stepIndex}">1</span>
+                        </div>
+                        <div class="agent-step-card">
+                            <header class="agent-step-heading">
+                                <div class="agent-step-heading-main">
+                                    <span class="agent-step-icon" aria-hidden="true"></span>
+                                    <div>
+                                        <strong class="agent-step-name"
+                                                th:text="${step.stepType.name() == 'PLAN' ? '任务规划' : (step.stepType.name() == 'TOOL_CALL' ? '调用工具' : (step.stepType.name() == 'TOOL_RESULT' ? '工具结果' : (step.stepType.name() == 'FINAL' ? '生成回答' : '执行异常')))}">任务规划</strong>
+                                        <time th:if="${step.createdAt != null}"
+                                              th:datetime="${step.createdAt}"
+                                              th:text="${#temporals.format(step.createdAt, 'HH:mm:ss')}">10:32:18</time>
+                                    </div>
+                                </div>
+                                <span class="agent-step-status"
+                                      th:text="${step.status.name() == 'SUCCESS' ? '已完成' : (step.status.name() == 'RUNNING' ? '进行中' : '失败')}">已完成</span>
+                            </header>
+
+                            <div th:if="${step.toolName != null or step.latencyMs != null}" class="agent-step-meta">
+                                <span th:if="${step.toolSource != null}" class="agent-step-source" th:text="${step.toolSource}">LOCAL</span>
+                                <code th:if="${step.toolName != null}" th:text="${step.toolName}">rag_search</code>
+                                <span th:if="${step.latencyMs != null}" class="agent-step-latency" th:text="${step.latencyMs + ' ms'}">120 ms</span>
+                            </div>
+
+                            <details th:if="${step.toolArguments != null or step.toolResult != null or step.errorMessage != null}"
+                                     class="agent-step-details">
+                                <summary><span>查看执行详情</span><i aria-hidden="true">⌄</i></summary>
+                                <div class="agent-step-detail" th:if="${step.toolArguments != null}">
+                                    <label>输入参数</label>
+                                    <pre th:text="${step.toolArguments}"></pre>
+                                </div>
+                                <div class="agent-step-detail" th:if="${step.toolResult != null}">
+                                    <label>执行结果</label>
+                                    <pre th:text="${step.toolResult}"></pre>
+                                </div>
+                                <div class="agent-step-detail is-error" th:if="${step.errorMessage != null}">
+                                    <label>错误信息</label>
+                                    <pre th:text="${step.errorMessage}"></pre>
+                                </div>
+                            </details>
+                        </div>
+                    </article>
                 </div>
             </section>
         </aside>
@@ -255,8 +304,10 @@
 <script>
     marked.setOptions({ gfm: true, breaks: true });
     let agentEventSource = null;
+    let agentStreamSequence = 0;
     let selectedAgentImageFile = null;
     let artifactRefreshSequence = 0;
+    let liveAgentSteps = new Map();
     let agentMemories = [];
     let editingMemory = null;
 
@@ -327,8 +378,15 @@
         const aiDiv = document.createElement("div");
         aiDiv.className = "msg ai-msg";
         const aiBubble = document.createElement("div");
-        aiBubble.className = "bubble ai-bubble markdown-content";
-        setBubbleStatus(aiBubble, "正在思考…");
+        const runUi = createAgentRunUi(aiBubble);
+        const progressTracker = createProgressTracker(runUi);
+        const markdownRenderer = createMarkdownRenderer(runUi.answer);
+        progressTracker.apply({
+            stageId: "connecting",
+            phase: "CONNECTING",
+            status: "RUNNING",
+            title: "正在建立任务连接"
+        });
         aiDiv.appendChild(aiBubble);
         box.appendChild(aiDiv);
 
@@ -337,26 +395,51 @@
         selectedAgentImageFile = null;
         scrollChatToBottom();
 
-        if (agentEventSource) agentEventSource.close();
+        const streamSequence = ++agentStreamSequence;
+        if (agentEventSource) {
+            agentEventSource.close();
+            agentEventSource = null;
+        }
 
         const sessionId = document.getElementById("agentSessionId").value;
         const question = text || "请结合我上传的图片进行分析。";
+        const baselineStepIds = await loadStepIdSnapshot(sessionId);
+        if (streamSequence !== agentStreamSequence) {
+            markdownRenderer.cancel();
+            progressTracker.notice("请求已被新的任务替代。", "ERROR");
+            return;
+        }
+        const streamStartedAt = Date.now();
         let url = `/agent/ask?sessionId=${sessionId}&question=${encodeURIComponent(question)}`;
         if (imageContext && imageContext.id) {
             url += `&imageContextId=${encodeURIComponent(imageContext.id)}`;
         }
-        agentEventSource = new EventSourcePolyfill(url);
+        const eventSource = new EventSourcePolyfill(url);
+        agentEventSource = eventSource;
         let full = "";
+        const streamState = {
+            runId: null,
+            completed: false,
+            sawFinal: false,
+            businessError: false,
+            businessErrorDetail: "",
+            handlingDisconnect: false
+        };
 
         // The live panel shows only the current run; refreshSteps() restores
         // the whole session history once the stream finishes.
         const stepList = document.getElementById("agentStepList");
         stepList.innerHTML = "";
+        liveAgentSteps.clear();
 
-        agentEventSource.onmessage = function (event) {
+        eventSource.onmessage = function (event) {
+            if (streamSequence !== agentStreamSequence) return;
             if (event.data === "[DONE]") {
-                agentEventSource.close();
-                agentEventSource = null;
+                streamState.completed = true;
+                markdownRenderer.flush();
+                progressTracker.finish();
+                eventSource.close();
+                if (agentEventSource === eventSource) agentEventSource = null;
                 refreshSteps();
                 refreshArtifacts();
                 if (document.getElementById("agentMemoryDialog").open) {
@@ -364,10 +447,21 @@
                 }
                 return;
             }
+            if (event.data.startsWith("@@HEARTBEAT@@")) {
+                const heartbeat = parseStructuredEvent(event.data, "@@HEARTBEAT@@");
+                acceptRunEvent(streamState, heartbeat);
+                return;
+            }
             if (event.data.startsWith("@@STEP@@")) {
-                let step = null;
-                try { step = JSON.parse(event.data.slice(8)); } catch (e) { return; }
-                if (step.phase !== "PLANNING") appendLiveStep(step);
+                const step = parseStructuredEvent(event.data, "@@STEP@@");
+                if (!step || !acceptRunEvent(streamState, step)) return;
+                if (step.phase === "FINAL") streamState.sawFinal = true;
+                if (step.phase === "ERROR") {
+                    streamState.businessError = true;
+                    streamState.businessErrorDetail = step.detail || "任务执行失败";
+                }
+                progressTracker.apply(step);
+                appendLiveStep(step);
                 if (step.phase === "TOOL_RESULT" && step.status === "SUCCESS") {
                     if (step.artifact) {
                         upsertArtifact(step.artifact);
@@ -375,22 +469,343 @@
                         refreshArtifacts();
                     }
                 }
-                if (!full) setBubbleStatus(aiBubble, liveStatusText(step));
                 return;
             }
-            full += unescapeSseChunk(event.data);
-            aiBubble.innerHTML = marked.parse(full);
-            scrollChatToBottom();
+            if (event.data.startsWith("@@ANSWER_DELTA@@")) {
+                const delta = parseStructuredEvent(event.data, "@@ANSWER_DELTA@@");
+                if (!delta || !acceptRunEvent(streamState, delta)) return;
+                const textDelta = typeof delta.text === "string" ? delta.text : "";
+                full += textDelta;
+                markdownRenderer.append(textDelta);
+                return;
+            }
+            if (event.data.startsWith("@@ANSWER_FINAL@@")) {
+                const finalAnswer = parseStructuredEvent(event.data, "@@ANSWER_FINAL@@");
+                if (!finalAnswer || !acceptRunEvent(streamState, finalAnswer)) return;
+                full = typeof finalAnswer.markdown === "string" ? finalAnswer.markdown : full;
+                streamState.sawFinal = true;
+                markdownRenderer.replace(full);
+                return;
+            }
+
+            // Rolling-deploy compatibility for a server that still emits
+            // plain answer chunks.
+            const legacyChunk = unescapeSseChunk(event.data);
+            full += legacyChunk;
+            markdownRenderer.append(legacyChunk);
         };
 
-        agentEventSource.onerror = function () {
-            full += "\n\n调用失败，请稍后重试。";
-            aiBubble.innerHTML = marked.parse(full);
-            agentEventSource.close();
-            agentEventSource = null;
-            refreshSteps();
-            refreshArtifacts();
+        eventSource.onerror = async function () {
+            // EventSource reports a transport error both for a real network
+            // interruption and for some already-completed SSE responses. Never
+            // let a late onerror overwrite a run that has received [DONE], nor
+            // let an older stream affect a newer question.
+            if (streamState.completed || streamState.handlingDisconnect || streamSequence !== agentStreamSequence) {
+                eventSource.close();
+                return;
+            }
+            streamState.handlingDisconnect = true;
+            eventSource.close();
+            if (agentEventSource === eventSource) agentEventSource = null;
+
+            if (!markdownRenderer.value() && !streamState.businessError) {
+                progressTracker.notice("连接中断，正在确认任务结果…", "RUNNING");
+            }
+            await reconcileInterruptedStream({
+                sessionId,
+                baselineStepIds,
+                streamStartedAt,
+                markdownRenderer,
+                progressTracker,
+                streamState,
+                streamSequence
+            });
         };
+    }
+
+    function createAgentRunUi(bubble) {
+        bubble.className = "bubble ai-bubble agent-run";
+        bubble.setAttribute("aria-busy", "true");
+        bubble.replaceChildren();
+
+        const progress = document.createElement("section");
+        progress.className = "agent-run-progress";
+        progress.setAttribute("aria-label", "任务执行进度");
+
+        const progressHeader = document.createElement("div");
+        progressHeader.className = "agent-run-progress-header";
+        const progressTitle = document.createElement("strong");
+        progressTitle.textContent = "执行进度";
+        const progressSummary = document.createElement("span");
+        progressSummary.textContent = "正在准备";
+        progressHeader.append(progressTitle, progressSummary);
+
+        const progressList = document.createElement("ol");
+        progressList.className = "agent-run-progress-list";
+        progressList.setAttribute("aria-live", "polite");
+        progress.append(progressHeader, progressList);
+
+        const answer = document.createElement("div");
+        answer.className = "agent-run-answer markdown-content";
+        answer.hidden = true;
+        bubble.append(progress, answer);
+        return { bubble, progress, progressList, progressSummary, answer };
+    }
+
+    function createProgressTracker(runUi) {
+        const stages = new Map();
+        let nextDisplayIndex = 0;
+        let hasTerminalError = false;
+        let hasStageError = false;
+
+        function statusLabel(status) {
+            switch (status) {
+                case "SUCCESS": return "完成";
+                case "ERROR": return "失败";
+                default: return "进行中";
+            }
+        }
+
+        function removeConnectingStage() {
+            const connecting = stages.get("connecting");
+            if (!connecting) return;
+            connecting.remove();
+            stages.delete("connecting");
+            nextDisplayIndex = Math.max(0, nextDisplayIndex - 1);
+        }
+
+        return {
+            apply(event) {
+                if (!event) return;
+                const stageId = event.stageId || `${event.phase || "stage"}-${event.sequence || nextDisplayIndex + 1}`;
+                if (stageId !== "connecting") removeConnectingStage();
+
+                let item = stages.get(stageId);
+                if (!item) {
+                    item = document.createElement("li");
+                    item.className = "agent-run-stage";
+                    item.dataset.stageId = stageId;
+
+                    const index = document.createElement("span");
+                    index.className = "agent-run-stage-index";
+                    index.textContent = String(++nextDisplayIndex);
+                    const body = document.createElement("div");
+                    body.className = "agent-run-stage-body";
+                    const title = document.createElement("span");
+                    title.className = "agent-run-stage-title";
+                    const status = document.createElement("em");
+                    status.className = "agent-run-stage-status";
+                    body.append(title, status);
+                    item.append(index, body);
+                    stages.set(stageId, item);
+                    runUi.progressList.appendChild(item);
+                }
+
+                const status = event.status || "RUNNING";
+                const title = event.title || liveStatusText(event);
+                if (status === "ERROR") {
+                    if (event.phase === "ERROR") hasTerminalError = true;
+                    else hasStageError = true;
+                }
+                item.dataset.status = status;
+                item.querySelector(".agent-run-stage-title").textContent = title;
+                item.querySelector(".agent-run-stage-status").textContent = statusLabel(status);
+                if (event.detail) item.title = event.detail;
+                runUi.progressSummary.textContent = title;
+                runUi.bubble.setAttribute("aria-busy", "true");
+                scrollChatToBottom();
+            },
+            notice(message, status) {
+                this.apply({
+                    stageId: "connection-notice",
+                    phase: "NOTICE",
+                    status: status || "RUNNING",
+                    title: message
+                });
+            },
+            finish() {
+                runUi.bubble.setAttribute("aria-busy", "false");
+                if (hasTerminalError) {
+                    runUi.progressSummary.textContent = "执行失败";
+                    runUi.progress.classList.add("is-error");
+                } else if (hasStageError) {
+                    runUi.progressSummary.textContent = "执行完成，部分步骤失败";
+                    runUi.progress.classList.add("is-warning");
+                } else if (!runUi.progressSummary.textContent.includes("完成")) {
+                    runUi.progressSummary.textContent = "执行完成";
+                }
+                if (!hasTerminalError && !hasStageError) runUi.progress.classList.add("is-complete");
+            },
+            fail(message) {
+                hasTerminalError = true;
+                this.notice(message || "任务执行失败", "ERROR");
+                runUi.bubble.setAttribute("aria-busy", "false");
+            }
+        };
+    }
+
+    function createMarkdownRenderer(answerElement) {
+        let markdown = "";
+        let timer = null;
+
+        function paint() {
+            if (timer !== null) {
+                window.clearTimeout(timer);
+                timer = null;
+            }
+            answerElement.hidden = !markdown;
+            answerElement.innerHTML = marked.parse(markdown || "");
+            scrollChatToBottom();
+        }
+
+        return {
+            append(delta) {
+                markdown += delta || "";
+                if (timer === null) timer = window.setTimeout(paint, 80);
+            },
+            replace(finalMarkdown) {
+                markdown = finalMarkdown || "";
+                paint();
+            },
+            flush: paint,
+            cancel() {
+                if (timer !== null) window.clearTimeout(timer);
+                timer = null;
+            },
+            value() {
+                return markdown;
+            }
+        };
+    }
+
+    function parseStructuredEvent(data, prefix) {
+        if (typeof data !== "string" || !data.startsWith(prefix)) return null;
+        try {
+            return JSON.parse(data.slice(prefix.length));
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function acceptRunEvent(streamState, event) {
+        if (!event || !event.runId) return true;
+        if (!streamState.runId) {
+            streamState.runId = event.runId;
+            return true;
+        }
+        return streamState.runId === event.runId;
+    }
+
+    async function loadAgentSteps(sessionId, timeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs || 1500);
+        try {
+            const response = await fetch(`/agent/steps?sessionId=${encodeURIComponent(sessionId)}`, {
+                headers: { "Accept": "application/json" },
+                signal: controller.signal
+            });
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                throw new Error("登录状态已失效");
+            }
+            if (!response.ok) throw new Error("调用链加载失败");
+            const steps = await response.json();
+            if (!Array.isArray(steps)) throw new Error("调用链格式错误");
+            return steps;
+        } finally {
+            window.clearTimeout(timeoutId);
+        }
+    }
+
+    async function loadStepIdSnapshot(sessionId) {
+        const renderedSteps = Array.from(document.querySelectorAll("#agentStepList .agent-step"));
+        if (renderedSteps.every(step => step.dataset.stepId)) {
+            return new Set(renderedSteps.map(step => step.dataset.stepId));
+        }
+        try {
+            const steps = await loadAgentSteps(sessionId, 1200);
+            return new Set(steps.map(step => String(step.id)));
+        } catch (error) {
+            // A missing snapshot only reduces correlation precision. The
+            // disconnect reconciliation still falls back to timestamps.
+            return null;
+        }
+    }
+
+    function stepsForInterruptedRun(steps, baselineStepIds, streamStartedAt) {
+        if (baselineStepIds) {
+            return steps.filter(step => !baselineStepIds.has(String(step.id)));
+        }
+        return steps.filter(step => {
+            const createdAt = new Date(step.createdAt).getTime();
+            return Number.isFinite(createdAt) && createdAt >= streamStartedAt - 5000;
+        });
+    }
+
+    function interruptedRunOutcome(steps) {
+        const finalStep = [...steps].reverse().find(step =>
+            step.stepType === "FINAL" && step.status === "SUCCESS"
+        );
+        if (finalStep) {
+            return { type: "SUCCESS", content: finalStep.toolResult || "" };
+        }
+        const errorStep = [...steps].reverse().find(step => step.stepType === "ERROR");
+        if (errorStep) {
+            return { type: "BUSINESS_ERROR", detail: errorStep.errorMessage || "任务执行失败" };
+        }
+        return { type: "PENDING" };
+    }
+
+    function delay(milliseconds) {
+        return new Promise(resolve => window.setTimeout(resolve, milliseconds));
+    }
+
+    async function reconcileInterruptedStream(context) {
+        const retryDelays = [0, 350, 900];
+        let outcome = { type: "PENDING" };
+
+        for (const retryDelay of retryDelays) {
+            if (context.streamSequence !== agentStreamSequence) return;
+            if (retryDelay > 0) await delay(retryDelay);
+            try {
+                const steps = await loadAgentSteps(context.sessionId);
+                outcome = interruptedRunOutcome(stepsForInterruptedRun(
+                    steps, context.baselineStepIds, context.streamStartedAt
+                ));
+                // FINAL is definitive. An ERROR step may still be followed by
+                // a best-effort FINAL answer, so keep polling before treating
+                // it as the terminal business outcome.
+                if (outcome.type === "SUCCESS") break;
+            } catch (error) {
+                // A failed confirmation request is itself a transport problem;
+                // keep retrying briefly before presenting an indeterminate state.
+            }
+        }
+
+        if (context.streamSequence !== agentStreamSequence) return;
+        const streamedAnswer = context.markdownRenderer.value();
+        if (outcome.type === "SUCCESS") {
+            const answer = outcome.content || streamedAnswer;
+            if (answer) context.markdownRenderer.replace(answer);
+            context.progressTracker.finish();
+        } else if (outcome.type === "BUSINESS_ERROR" || context.streamState.businessError) {
+            const detail = outcome.detail || context.streamState.businessErrorDetail || "任务执行失败";
+            const answer = streamedAnswer || `任务执行失败：${detail}`;
+            context.markdownRenderer.replace(answer);
+            context.progressTracker.fail(`任务执行失败：${detail}`);
+        } else if (streamedAnswer) {
+            context.markdownRenderer.replace(
+                `${streamedAnswer}\n\n> 连接已中断，以上回答可能不完整。请刷新页面确认最终结果。`
+            );
+            context.progressTracker.fail("回答传输中断");
+        } else if (context.streamState.sawFinal) {
+            context.progressTracker.fail("最终回答传输中断，请刷新页面确认执行结果。");
+        } else {
+            context.progressTracker.fail("连接已中断，暂时无法确认任务结果，请稍后重试。");
+        }
+        scrollChatToBottom();
+        refreshSteps();
+        refreshArtifacts();
     }
 
     // Reverses the server-side SSE escaping: "\\" first, then "\n",
@@ -398,6 +813,7 @@
     function unescapeSseChunk(data) {
         return data
             .replace(/\\\\/g, "\u0000")
+            .replace(/\\r/g, "\r")
             .replace(/\\n/g, "\n")
             .replace(/\u0000/g, "\\");
     }
@@ -412,14 +828,6 @@
             case "FINAL": return "正在生成回答…";
             default: return "处理中…";
         }
-    }
-
-    function setBubbleStatus(bubble, text) {
-        bubble.innerHTML = "";
-        const status = document.createElement("span");
-        status.className = "agent-stream-status";
-        status.textContent = text;
-        bubble.appendChild(status);
     }
 
     function appendLiveStep(step) {
@@ -671,6 +1079,7 @@
     function renderStep(step) {
         const item = document.createElement("div");
         item.className = "agent-step";
+        if (step.id != null) item.dataset.stepId = String(step.id);
         const title = document.createElement("div");
         title.className = "agent-step-title";
         const label = document.createElement("span");

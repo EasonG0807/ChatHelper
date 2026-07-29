@@ -45,24 +45,51 @@ class PDFGenerationToolTest {
     }
 
     @Test
-    void sameRequestedNameCreatesDistinctArtifactsWithoutLeakingServerPath() {
+    void sameMessageAndRequestedNameReusesOneArtifactWithoutOverwritingIt() throws Exception {
         AgentWorkspaceService workspaceService = new AgentWorkspaceService(tempDir.toString());
         Path workspace = workspaceService.workspace(1L, 1L);
         PDFGenerationTool tool = new PDFGenerationTool(workspaceService, "");
         ToolExecutionContext context = new ToolExecutionContext(1L, 1L, 1L, workspace);
 
         ToolExecutionResult first = tool.execute(context,
-                Map.of("content", "第一份", "fileName", "report.pdf"));
+                Map.of("content", "first version", "fileName", "report.pdf"));
         ToolExecutionResult second = tool.execute(context,
-                Map.of("content", "第二份", "fileName", "report.pdf"));
+                Map.of("content", "second version", "fileName", "report.pdf"));
+
+        assertTrue(first.success(), first.errorMessage());
+        assertTrue(second.success(), second.errorMessage());
+        assertEquals(first.artifactPath(), second.artifactPath());
+        assertTrue(second.content().contains("reused"));
+        assertTrue(Files.isRegularFile(Path.of(first.artifactPath())));
+        assertFalse(first.content().contains(tempDir.toString()));
+        assertFalse(first.toObservation().contains(tempDir.toString()));
+
+        try (PDDocument document = PDDocument.load(Path.of(first.artifactPath()).toFile())) {
+            String extracted = new PDFTextStripper().getText(document);
+            assertTrue(extracted.contains("first version"));
+            assertFalse(extracted.contains("second version"));
+        }
+        try (var paths = Files.walk(workspace.resolve("artifacts"))) {
+            assertEquals(1, paths.filter(Files::isRegularFile).count());
+        }
+    }
+
+    @Test
+    void sameFileNameInDifferentMessagesCreatesDistinctArtifacts() {
+        AgentWorkspaceService workspaceService = new AgentWorkspaceService(tempDir.toString());
+        Path workspace = workspaceService.workspace(1L, 1L);
+        PDFGenerationTool tool = new PDFGenerationTool(workspaceService, "");
+
+        ToolExecutionResult first = tool.execute(
+                new ToolExecutionContext(1L, 1L, 1L, workspace),
+                Map.of("content", "first request", "fileName", "report.pdf"));
+        ToolExecutionResult second = tool.execute(
+                new ToolExecutionContext(1L, 1L, 2L, workspace),
+                Map.of("content", "second request", "fileName", "report.pdf"));
 
         assertTrue(first.success(), first.errorMessage());
         assertTrue(second.success(), second.errorMessage());
         assertNotEquals(first.artifactPath(), second.artifactPath());
-        assertTrue(Files.isRegularFile(Path.of(first.artifactPath())));
-        assertTrue(Files.isRegularFile(Path.of(second.artifactPath())));
-        assertFalse(first.content().contains(tempDir.toString()));
-        assertFalse(first.toObservation().contains(tempDir.toString()));
     }
 
     @Test

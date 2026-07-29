@@ -6,9 +6,13 @@ import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.text.Normalizer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
@@ -87,6 +91,35 @@ public class AgentWorkspaceService {
             throw new IllegalArgumentException("File path escapes the agent workspace.");
         }
         return resolved;
+    }
+
+    /**
+     * Returns a stable artifact path for one logical tool operation. Repeating
+     * the same operation therefore reuses the existing file instead of
+     * allocating another UUID directory.
+     */
+    public Path createIdempotentArtifactPath(Path workspace, String fileName, String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            return createArtifactPath(workspace, fileName);
+        }
+        Path normalizedWorkspace = workspace.toAbsolutePath().normalize();
+        String safeName = sanitizeFileName(fileName);
+        String keyHash = sha256(idempotencyKey);
+        Path resolved = normalizedWorkspace
+                .resolve("artifacts")
+                .resolve("idempotent")
+                .resolve(keyHash)
+                .resolve(safeName)
+                .normalize();
+        if (!resolved.startsWith(normalizedWorkspace)) {
+            throw new IllegalArgumentException("File path escapes the agent workspace.");
+        }
+        return resolved;
+    }
+
+    /** Canonical file name used both for storage and duplicate-call keys. */
+    public String artifactFileName(String fileName) {
+        return sanitizeFileName(fileName);
     }
 
     public Path workspacePath(Long userId, Long sessionId) {
@@ -199,5 +232,15 @@ public class AgentWorkspaceService {
             end--;
         }
         return value.substring(0, end) + extension;
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is not available.", ex);
+        }
     }
 }
