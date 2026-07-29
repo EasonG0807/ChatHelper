@@ -7,7 +7,9 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.text.Normalizer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -156,6 +158,77 @@ public class AgentWorkspaceService {
             throw new IllegalArgumentException("Stored artifact path escapes the session workspace.");
         }
         return resolved;
+    }
+
+    /**
+     * Deletes one stored artifact after re-validating its real path. Missing
+     * files are treated as already deleted so stale metadata can self-heal.
+     */
+    public void deleteStoredArtifact(Long userId, Long sessionId, String relativePath) {
+        Path workspace = workspacePath(userId, sessionId);
+        Path artifact = resolveStoredArtifact(userId, sessionId, relativePath);
+        if (Files.notExists(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        if (!Files.exists(artifact, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IllegalStateException("Artifact path cannot be accessed.");
+        }
+
+        try {
+            if (containsSymbolicLink(workspace, artifact)
+                    || !Files.isRegularFile(artifact, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IllegalArgumentException("Stored artifact path is not a regular workspace file.");
+            }
+            Path realRoot = root.toRealPath();
+            Path realWorkspace = workspace.toRealPath();
+            Path realArtifact = artifact.toRealPath();
+            if (!realWorkspace.startsWith(realRoot)
+                    || realWorkspace.equals(realRoot)
+                    || !realArtifact.startsWith(realWorkspace)
+                    || realArtifact.equals(realWorkspace)) {
+                throw new IllegalArgumentException("Stored artifact path escapes the session workspace.");
+            }
+
+            Files.delete(realArtifact);
+            deleteEmptyArtifactParents(workspace, artifact.getParent());
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to delete artifact file.", ex);
+        }
+    }
+
+    private boolean containsSymbolicLink(Path workspace, Path artifact) {
+        Path current = workspace;
+        Path relative = workspace.relativize(artifact);
+        for (Path segment : relative) {
+            current = current.resolve(segment);
+            if (Files.isSymbolicLink(current)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void deleteEmptyArtifactParents(Path workspace, Path parent) {
+        Path artifactsRoot = workspace.resolve("artifacts").normalize();
+        Path current = parent;
+        while (current != null && current.startsWith(artifactsRoot) && !current.equals(artifactsRoot)) {
+            if (Files.isSymbolicLink(current)) {
+                return;
+            }
+            try {
+                if (!Files.deleteIfExists(current)) {
+                    return;
+                }
+            } catch (DirectoryNotEmptyException notEmpty) {
+                return;
+            } catch (IOException cleanupFailure) {
+                log.debug("Failed to remove empty artifact directory {}: {}", current, cleanupFailure.getMessage());
+                return;
+            }
+            current = current.getParent();
+        }
     }
 
     private String sanitizeFileName(String fileName) {

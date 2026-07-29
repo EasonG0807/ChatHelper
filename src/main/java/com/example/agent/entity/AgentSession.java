@@ -10,12 +10,14 @@ import jakarta.persistence.Id;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import lombok.Data;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "agent_session")
 @Data
+@DynamicUpdate
 public class AgentSession {
 
     @Id

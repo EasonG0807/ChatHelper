@@ -39,15 +39,29 @@
 
             <div class="agent-session-list">
                 <div th:each="s : ${sessions}"
-                     th:class="${s.id == activeSession.id} ? 'agent-session-item active' : 'agent-session-item'">
+                     th:class="${s.id == activeSession.id} ? 'agent-session-item active' : 'agent-session-item'"
+                     th:attr="data-session-id=${s.id},data-active=${s.id == activeSession.id}">
                     <a class="agent-session-link" th:href="@{/agent(sessionId=${s.id})}">
-                        <span th:text="${s.title}">AI超级智能体</span>
-                        <small th:text="${#temporals.format(s.updatedAt, 'MM-dd HH:mm')}">05-09 10:30</small>
+                        <span class="agent-session-title" th:text="${s.title}">AI超级智能体</span>
+                        <small class="agent-session-updated"
+                               th:text="${#temporals.format(s.updatedAt, 'MM-dd HH:mm')}">05-09 10:30</small>
                     </a>
-                    <form th:action="@{/agent/session/{id}/delete(id=${s.id})}" method="post"
-                          onsubmit="return confirm('确认删除该会话？聊天记录和执行步骤会一并删除。');">
-                        <button class="agent-session-delete" type="submit" title="删除会话">✕</button>
+                    <form class="agent-session-rename-form" hidden>
+                        <input class="agent-session-rename-input" type="text" aria-label="新的会话名称"
+                               autocomplete="off" required>
+                        <button class="agent-session-edit-save" type="submit">保存</button>
+                        <button class="agent-session-edit-cancel" type="button" data-session-action="cancel">取消</button>
+                        <span class="agent-session-edit-feedback" role="alert"></span>
                     </form>
+                    <div class="agent-session-actions">
+                        <button class="agent-session-action agent-session-rename" type="button"
+                                data-session-action="rename" title="重命名会话" aria-label="重命名会话">✎</button>
+                        <form th:action="@{/agent/session/{id}/delete(id=${s.id})}" method="post"
+                              onsubmit="return confirm('确认删除该会话？聊天记录、执行步骤和产出文件会一并删除，且无法恢复。');">
+                            <button class="agent-session-action agent-session-delete" type="submit"
+                                    title="删除会话" aria-label="删除会话">✕</button>
+                        </form>
+                    </div>
                 </div>
             </div>
 
@@ -61,7 +75,7 @@
         <main class="agent-chat-panel">
             <div class="agent-chat-header">
                 <div>
-                    <h1 th:text="${activeSession.title}">AI超级智能体</h1>
+                    <h1 id="agentActiveSessionTitle" th:text="${activeSession.title}">AI超级智能体</h1>
                     <p>可调用本地工具、RAG 工具以及已注册的 MCP 工具</p>
                 </div>
                 <button class="btn btn-danger btn-sm" onclick="clearAgentSession()">清空</button>
@@ -94,7 +108,7 @@
                           onkeydown="if(event.keyCode===13 && !event.shiftKey) { event.preventDefault(); sendAgentMessage(); }"></textarea>
                 <input id="agentImageInput" type="file" accept="image/*" style="display:none">
                 <button class="btn btn-secondary" onclick="document.getElementById('agentImageInput').click()">图片</button>
-                <button class="btn" onclick="sendAgentMessage()">发送</button>
+                <button id="agentSendButton" class="btn" onclick="sendAgentMessage()">发送</button>
             </div>
         </main>
 
@@ -137,6 +151,9 @@
                             <a class="agent-artifact-action agent-artifact-download"
                                data-artifact-action="download"
                                th:attr="data-artifact-url=${artifact.downloadUrl}">下载</a>
+                            <button type="button" class="agent-artifact-action agent-artifact-delete"
+                                    data-artifact-action="delete"
+                                    th:attr="data-artifact-id=${artifact.id},data-artifact-name=${artifact.fileName}">删除</button>
                         </div>
                     </article>
                 </div>
@@ -307,6 +324,9 @@
     let agentStreamSequence = 0;
     let selectedAgentImageFile = null;
     let artifactRefreshSequence = 0;
+    const pendingArtifactDeleteIds = new Set();
+    const deletedArtifactIds = new Set();
+    let agentRunState = "IDLE";
     let liveAgentSteps = new Map();
     let agentMemories = [];
     let editingMemory = null;
@@ -316,6 +336,8 @@
             el.innerHTML = marked.parse(el.textContent || "");
         });
         hydrateArtifactLinks(document.getElementById("agentArtifactList"));
+        bindArtifactListActions();
+        bindSessionListActions();
         updateArtifactCount();
         scrollChatToBottom();
         document.getElementById("agentMemoryEditContent").addEventListener("input", updateMemoryContentCount);
@@ -324,6 +346,122 @@
     function fillPrompt(text) {
         document.getElementById("agentInput").value = text;
         document.getElementById("agentInput").focus();
+    }
+
+    function bindSessionListActions() {
+        const list = document.querySelector(".agent-session-list");
+        if (!list) return;
+        list.addEventListener("click", event => {
+            const action = event.target.closest("[data-session-action]");
+            if (!action || !list.contains(action)) return;
+            const item = action.closest(".agent-session-item");
+            if (!item) return;
+            if (action.dataset.sessionAction === "rename") openSessionRename(item);
+            if (action.dataset.sessionAction === "cancel") closeSessionRename(item);
+        });
+        list.addEventListener("submit", event => {
+            const form = event.target.closest(".agent-session-rename-form");
+            if (!form) return;
+            event.preventDefault();
+            saveSessionRename(form);
+        });
+        list.addEventListener("keydown", event => {
+            if (event.key === "Escape") {
+                const item = event.target.closest(".agent-session-item.is-renaming");
+                if (item) closeSessionRename(item);
+            }
+        });
+    }
+
+    function openSessionRename(item) {
+        const savingItem = document.querySelector(".agent-session-item.is-saving");
+        if (savingItem && savingItem !== item) return;
+        document.querySelectorAll(".agent-session-item.is-renaming").forEach(current => {
+            if (current !== item) closeSessionRename(current);
+        });
+        const form = item.querySelector(".agent-session-rename-form");
+        const input = item.querySelector(".agent-session-rename-input");
+        const title = item.querySelector(".agent-session-title");
+        if (!form || !input || !title) return;
+        input.value = title.textContent || "";
+        form.querySelector(".agent-session-edit-feedback").textContent = "";
+        form.hidden = false;
+        item.classList.add("is-renaming");
+        input.focus();
+        input.select();
+    }
+
+    function closeSessionRename(item, force) {
+        const form = item && item.querySelector(".agent-session-rename-form");
+        if (!item || !form) return;
+        if (!force && item.classList.contains("is-saving")) return;
+        item.classList.remove("is-renaming");
+        form.hidden = true;
+        form.querySelector(".agent-session-edit-feedback").textContent = "";
+    }
+
+    async function saveSessionRename(form) {
+        const item = form.closest(".agent-session-item");
+        const input = form.querySelector(".agent-session-rename-input");
+        const saveButton = form.querySelector(".agent-session-edit-save");
+        const cancelButton = form.querySelector(".agent-session-edit-cancel");
+        const feedback = form.querySelector(".agent-session-edit-feedback");
+        const sessionId = item && item.dataset.sessionId;
+        const title = input ? input.value.trim().normalize("NFC") : "";
+        if (!item || !sessionId || !title) {
+            feedback.textContent = "会话名称不能为空。";
+            return;
+        }
+        if (Array.from(title).length > 100) {
+            feedback.textContent = "会话名称不能超过 100 个字符。";
+            return;
+        }
+
+        saveButton.disabled = true;
+        cancelButton.disabled = true;
+        input.disabled = true;
+        item.classList.add("is-saving");
+        feedback.textContent = "";
+        try {
+            const response = await fetch(`/agent/session/${encodeURIComponent(sessionId)}/rename`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Accept": "application/json"
+                },
+                body: new URLSearchParams({ title })
+            });
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                return;
+            }
+            let result = {};
+            try {
+                result = await response.json();
+            } catch (ignored) {
+            }
+            if (!response.ok) {
+                throw new Error(result.message || (response.status === 404
+                    ? "会话不存在或已被删除。" : "会话重命名失败。"));
+            }
+
+            const safeTitle = typeof result.title === "string" ? result.title : title;
+            item.querySelector(".agent-session-title").textContent = safeTitle;
+            const updated = item.querySelector(".agent-session-updated");
+            if (updated) updated.textContent = "刚刚";
+            if (item.dataset.active === "true") {
+                document.getElementById("agentActiveSessionTitle").textContent = safeTitle;
+            }
+            closeSessionRename(item, true);
+            item.parentElement.prepend(item);
+        } catch (error) {
+            feedback.textContent = error.message || "会话重命名失败。";
+        } finally {
+            saveButton.disabled = false;
+            cancelButton.disabled = false;
+            input.disabled = false;
+            item.classList.remove("is-saving");
+        }
     }
 
     document.getElementById("agentImageInput").addEventListener("change", function () {
@@ -346,11 +484,19 @@
         const input = document.getElementById("agentInput");
         const text = input.value.trim();
         if (!text && !selectedAgentImageFile) return;
+        if (agentRunState !== "IDLE") {
+            alert(agentRunState === "UNKNOWN"
+                ? "上一任务的执行状态尚未确认，请刷新页面确认后再提交新任务。"
+                : "当前任务仍在执行，请等待完成后再提交新任务。");
+            return;
+        }
+        setAgentRunState("ACTIVE");
 
         let imageContext = null;
         try {
             imageContext = await uploadAgentImageContext();
         } catch (err) {
+            setAgentRunState("IDLE");
             alert(err.message || "图片上传失败");
             return;
         }
@@ -414,7 +560,15 @@
         if (imageContext && imageContext.id) {
             url += `&imageContextId=${encodeURIComponent(imageContext.id)}`;
         }
-        const eventSource = new EventSourcePolyfill(url);
+        let eventSource;
+        try {
+            eventSource = new EventSourcePolyfill(url);
+        } catch (error) {
+            setAgentRunState("IDLE");
+            markdownRenderer.cancel();
+            progressTracker.fail("任务连接创建失败，请稍后重试。");
+            return;
+        }
         agentEventSource = eventSource;
         let full = "";
         const streamState = {
@@ -440,6 +594,7 @@
                 progressTracker.finish();
                 eventSource.close();
                 if (agentEventSource === eventSource) agentEventSource = null;
+                setAgentRunState("IDLE");
                 refreshSteps();
                 refreshArtifacts();
                 if (document.getElementById("agentMemoryDialog").open) {
@@ -507,6 +662,7 @@
             streamState.handlingDisconnect = true;
             eventSource.close();
             if (agentEventSource === eventSource) agentEventSource = null;
+            setAgentRunState("UNKNOWN");
 
             if (!markdownRenderer.value() && !streamState.businessError) {
                 progressTracker.notice("连接中断，正在确认任务结果…", "RUNNING");
@@ -788,20 +944,25 @@
             const answer = outcome.content || streamedAnswer;
             if (answer) context.markdownRenderer.replace(answer);
             context.progressTracker.finish();
+            setAgentRunState("IDLE");
         } else if (outcome.type === "BUSINESS_ERROR" || context.streamState.businessError) {
             const detail = outcome.detail || context.streamState.businessErrorDetail || "任务执行失败";
             const answer = streamedAnswer || `任务执行失败：${detail}`;
             context.markdownRenderer.replace(answer);
             context.progressTracker.fail(`任务执行失败：${detail}`);
+            setAgentRunState("UNKNOWN");
         } else if (streamedAnswer) {
             context.markdownRenderer.replace(
                 `${streamedAnswer}\n\n> 连接已中断，以上回答可能不完整。请刷新页面确认最终结果。`
             );
             context.progressTracker.fail("回答传输中断");
+            setAgentRunState("UNKNOWN");
         } else if (context.streamState.sawFinal) {
             context.progressTracker.fail("最终回答传输中断，请刷新页面确认执行结果。");
+            setAgentRunState("UNKNOWN");
         } else {
             context.progressTracker.fail("连接已中断，暂时无法确认任务结果，请稍后重试。");
+            setAgentRunState("UNKNOWN");
         }
         scrollChatToBottom();
         refreshSteps();
@@ -832,29 +993,43 @@
 
     function appendLiveStep(step) {
         const list = document.getElementById("agentStepList");
-        const item = document.createElement("div");
-        item.className = "agent-step agent-step-live";
-        const title = document.createElement("div");
-        title.className = "agent-step-title";
-        const label = document.createElement("span");
-        label.textContent = step.phase;
-        const status = document.createElement("em");
-        status.textContent = step.status || "";
-        title.appendChild(label);
-        title.appendChild(status);
-        item.appendChild(title);
-        if (step.tool) {
-            const tool = document.createElement("div");
-            tool.className = "agent-step-tool";
-            tool.textContent = step.tool;
-            item.appendChild(tool);
+        if (!list || !step) return;
+        list.querySelectorAll(".agent-chain-empty").forEach(item => item.remove());
+
+        const stageId = step.stageId || `${step.phase || "STEP"}-${step.sequence || liveAgentSteps.size + 1}`;
+        const previous = liveAgentSteps.get(stageId) || {
+            stepIndex: liveAgentSteps.size + 1,
+            createdAt: Date.now(),
+            toolSource: "LIVE"
+        };
+        const phase = step.phase || previous.stepType || "PLAN";
+        const next = {
+            ...previous,
+            stepType: phase === "PLANNING" ? "PLAN" : (phase === "TOOL_ERROR" ? "TOOL_RESULT" : phase),
+            status: step.status || previous.status || "RUNNING",
+            toolName: step.tool || previous.toolName || null,
+            liveStageId: stageId
+        };
+
+        if (phase === "PLANNING") next.status = "RUNNING";
+        if (phase === "PLAN") next.toolResult = step.detail || previous.toolResult;
+        if (phase === "TOOL_CALL") next.toolArguments = step.detail || previous.toolArguments;
+        if (phase === "TOOL_RESULT") next.toolResult = step.detail || previous.toolResult;
+        if (phase === "TOOL_ERROR" || phase === "ERROR") {
+            next.errorMessage = step.detail || previous.errorMessage;
+            next.status = "FAILED";
         }
-        if (step.detail) {
-            const pre = document.createElement("pre");
-            pre.textContent = step.detail;
-            item.appendChild(pre);
-        }
-        list.appendChild(item);
+        if (phase === "FINAL") next.toolResult = step.detail || previous.toolResult;
+
+        const latencyMatch = typeof step.detail === "string" ? step.detail.match(/^(\d+)ms\b/) : null;
+        if (latencyMatch) next.latencyMs = Number(latencyMatch[1]);
+        liveAgentSteps.set(stageId, next);
+
+        const rendered = createAgentStepElement(next, true);
+        const existing = Array.from(list.querySelectorAll(".agent-step"))
+            .find(item => item.dataset.liveStageId === stageId);
+        if (existing) existing.replaceWith(rendered);
+        else list.appendChild(rendered);
         list.scrollTop = list.scrollHeight;
     }
 
@@ -933,7 +1108,7 @@
     function renderArtifactCard(artifact) {
         if (!artifact || (typeof artifact !== "object")) return null;
         const artifactId = safeArtifactText(artifact.id, "", 128);
-        if (!artifactId) return null;
+        if (!artifactId || deletedArtifactIds.has(artifactId)) return null;
 
         const fileName = safeArtifactText(artifact.fileName, "未命名文件", 260);
         const contentType = safeArtifactText(artifact.contentType, "", 100);
@@ -985,6 +1160,18 @@
             "下载", artifact.downloadUrl, "agent-artifact-action agent-artifact-download", false
         );
         if (download) actions.appendChild(download);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "agent-artifact-action agent-artifact-delete";
+        remove.dataset.artifactAction = "delete";
+        remove.dataset.artifactId = artifactId;
+        remove.dataset.artifactName = fileName;
+        remove.textContent = "删除";
+        if (pendingArtifactDeleteIds.has(artifactId)) {
+            remove.disabled = true;
+            card.classList.add("is-deleting");
+        }
+        actions.appendChild(remove);
         card.appendChild(actions);
         return card;
     }
@@ -1006,6 +1193,101 @@
     function setArtifactFeedback(message) {
         const feedback = document.getElementById("agentArtifactFeedback");
         if (feedback) feedback.textContent = message || "";
+    }
+
+    function bindArtifactListActions() {
+        const list = document.getElementById("agentArtifactList");
+        if (!list) return;
+        list.addEventListener("click", event => {
+            const button = event.target.closest('[data-artifact-action="delete"]');
+            if (!button || !list.contains(button)) return;
+            deleteArtifact(button);
+        });
+    }
+
+    function findArtifactCard(artifactId) {
+        const list = document.getElementById("agentArtifactList");
+        if (!list) return null;
+        return Array.from(list.querySelectorAll(".agent-artifact-card"))
+            .find(item => item.dataset.artifactId === artifactId) || null;
+    }
+
+    function setAgentRunState(nextState) {
+        agentRunState = nextState;
+        const sendButton = document.getElementById("agentSendButton");
+        if (!sendButton) return;
+        sendButton.disabled = nextState !== "IDLE";
+        sendButton.textContent = nextState === "ACTIVE"
+            ? "执行中…" : (nextState === "UNKNOWN" ? "待确认" : "发送");
+    }
+
+    async function deleteArtifact(button) {
+        const card = button.closest(".agent-artifact-card");
+        const artifactId = safeArtifactText(button.dataset.artifactId || card?.dataset.artifactId, "", 128);
+        const fileName = safeArtifactText(
+            button.dataset.artifactName || card?.querySelector(".agent-artifact-name")?.textContent,
+            "该文件", 260
+        );
+        if (!card || !artifactId || button.disabled) return;
+        if (agentRunState !== "IDLE") {
+            setArtifactFeedback(agentRunState === "UNKNOWN"
+                ? "任务执行状态尚未确认，暂不能删除产出；请刷新页面确认后再试。"
+                : "任务执行期间暂不能删除产出，请等待本次执行完成。");
+            return;
+        }
+        if (!confirm(`确认永久删除这个产出文件？\n\n${fileName}\n\n删除后无法恢复。`)) return;
+
+        artifactRefreshSequence++;
+        pendingArtifactDeleteIds.add(artifactId);
+        button.disabled = true;
+        card.classList.add("is-deleting");
+        setArtifactFeedback(`正在删除「${fileName}」…`);
+        try {
+            const response = await fetch(`/agent/artifacts/${encodeURIComponent(artifactId)}`, {
+                method: "DELETE",
+                headers: { "Accept": "application/json" }
+            });
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                return;
+            }
+            if (!response.ok && response.status !== 404) {
+                const message = (await response.text()).trim();
+                throw new Error(message || "产出文件删除失败。");
+            }
+
+            pendingArtifactDeleteIds.delete(artifactId);
+            deletedArtifactIds.add(artifactId);
+            const currentCard = findArtifactCard(artifactId);
+            if (currentCard) currentCard.remove();
+            const list = document.getElementById("agentArtifactList");
+            if (list && !list.querySelector(".agent-artifact-card")) {
+                list.replaceChildren(renderArtifactEmpty());
+            }
+            updateArtifactCount();
+            setArtifactFeedback(response.status === 404
+                ? "该产出已不存在，列表已同步更新。"
+                : `已删除「${fileName}」。`);
+        } catch (error) {
+            pendingArtifactDeleteIds.delete(artifactId);
+            const currentCard = findArtifactCard(artifactId);
+            if (currentCard) {
+                currentCard.classList.remove("is-deleting");
+                const currentButton = currentCard.querySelector('[data-artifact-action="delete"]');
+                if (currentButton) currentButton.disabled = false;
+            } else {
+                const list = document.getElementById("agentArtifactList");
+                if (list) {
+                    list.querySelectorAll(".agent-artifact-empty").forEach(item => item.remove());
+                    button.disabled = false;
+                    card.classList.remove("is-deleting");
+                    list.prepend(card);
+                    updateArtifactCount();
+                }
+            }
+            await refreshArtifacts();
+            setArtifactFeedback(error.message || "产出文件删除失败，请稍后重试。");
+        }
     }
 
     function upsertArtifact(artifact) {
@@ -1071,38 +1353,161 @@
             .then(response => response.json())
             .then(steps => {
                 const list = document.getElementById("agentStepList");
-                list.innerHTML = "";
-                steps.forEach(step => list.appendChild(renderStep(step)));
+                const fragment = document.createDocumentFragment();
+                liveAgentSteps.clear();
+                if (Array.isArray(steps) && steps.length > 0) {
+                    steps.forEach(step => fragment.appendChild(renderStep(step)));
+                } else {
+                    fragment.appendChild(renderAgentChainEmpty());
+                }
+                list.replaceChildren(fragment);
             });
     }
 
     function renderStep(step) {
-        const item = document.createElement("div");
-        item.className = "agent-step";
+        return createAgentStepElement(step, false);
+    }
+
+    function agentStepPresentation(stepType) {
+        switch (String(stepType || "PLAN")) {
+            case "TOOL_CALL": return { label: "调用工具", kind: "TOOL_CALL" };
+            case "TOOL_RESULT": return { label: "工具结果", kind: "TOOL_RESULT" };
+            case "FINAL": return { label: "生成回答", kind: "FINAL" };
+            case "ERROR": return { label: "执行异常", kind: "ERROR" };
+            default: return { label: "任务规划", kind: "PLAN" };
+        }
+    }
+
+    function agentStepStatusLabel(status) {
+        switch (String(status || "RUNNING")) {
+            case "SUCCESS": return "已完成";
+            case "FAILED":
+            case "ERROR": return "失败";
+            default: return "进行中";
+        }
+    }
+
+    function formatAgentStepTime(value) {
+        const date = value == null ? new Date() : new Date(value);
+        if (Number.isNaN(date.getTime())) return "";
+        return new Intl.DateTimeFormat("zh-CN", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).format(date);
+    }
+
+    function appendAgentStepDetail(root, labelText, value, isError) {
+        if (value == null || value === "") return;
+        const detail = document.createElement("div");
+        detail.className = isError ? "agent-step-detail is-error" : "agent-step-detail";
+        const label = document.createElement("label");
+        label.textContent = labelText;
+        const pre = document.createElement("pre");
+        pre.textContent = String(value);
+        detail.append(label, pre);
+        root.appendChild(detail);
+    }
+
+    function createAgentStepElement(step, live) {
+        const presentation = agentStepPresentation(step.stepType);
+        const item = document.createElement("article");
+        item.className = live ? "agent-step agent-step-live" : "agent-step";
+        item.dataset.stepType = presentation.kind;
+        item.dataset.status = String(step.status || "RUNNING");
         if (step.id != null) item.dataset.stepId = String(step.id);
-        const title = document.createElement("div");
-        title.className = "agent-step-title";
-        const label = document.createElement("span");
-        label.textContent = `${step.stepIndex}. ${step.stepType}`;
-        const status = document.createElement("em");
-        status.textContent = step.status || "";
-        title.appendChild(label);
-        title.appendChild(status);
-        item.appendChild(title);
+        if (live && step.liveStageId) item.dataset.liveStageId = step.liveStageId;
 
-        const tool = document.createElement("div");
-        tool.className = "agent-step-tool";
-        tool.textContent = `${step.toolSource || "SYSTEM"} / ${step.toolName || "-"}`;
-        item.appendChild(tool);
+        const rail = document.createElement("div");
+        rail.className = "agent-step-rail";
+        rail.setAttribute("aria-hidden", "true");
+        const node = document.createElement("span");
+        node.className = "agent-step-node";
+        node.textContent = String(step.stepIndex || 1);
+        rail.appendChild(node);
 
-        [step.toolArguments, step.toolResult, step.errorMessage].forEach(value => {
-            if (value) {
-                const pre = document.createElement("pre");
-                pre.textContent = value;
-                item.appendChild(pre);
+        const card = document.createElement("div");
+        card.className = "agent-step-card";
+        const heading = document.createElement("header");
+        heading.className = "agent-step-heading";
+        const headingMain = document.createElement("div");
+        headingMain.className = "agent-step-heading-main";
+        const icon = document.createElement("span");
+        icon.className = "agent-step-icon";
+        icon.setAttribute("aria-hidden", "true");
+        const titleBlock = document.createElement("div");
+        const name = document.createElement("strong");
+        name.className = "agent-step-name";
+        name.textContent = presentation.label;
+        const time = document.createElement("time");
+        const timeLabel = formatAgentStepTime(step.createdAt);
+        time.textContent = timeLabel;
+        if (step.createdAt != null) time.dateTime = String(step.createdAt);
+        titleBlock.append(name, time);
+        headingMain.append(icon, titleBlock);
+        const status = document.createElement("span");
+        status.className = "agent-step-status";
+        status.textContent = agentStepStatusLabel(step.status);
+        heading.append(headingMain, status);
+        card.appendChild(heading);
+
+        if (step.toolSource || step.toolName || step.latencyMs != null) {
+            const meta = document.createElement("div");
+            meta.className = "agent-step-meta";
+            if (step.toolSource) {
+                const source = document.createElement("span");
+                source.className = "agent-step-source";
+                source.textContent = String(step.toolSource);
+                meta.appendChild(source);
             }
-        });
+            if (step.toolName) {
+                const tool = document.createElement("code");
+                tool.textContent = String(step.toolName);
+                meta.appendChild(tool);
+            }
+            if (step.latencyMs != null) {
+                const latency = document.createElement("span");
+                latency.className = "agent-step-latency";
+                latency.textContent = `${step.latencyMs} ms`;
+                meta.appendChild(latency);
+            }
+            card.appendChild(meta);
+        }
+
+        if (step.toolArguments || step.toolResult || step.errorMessage) {
+            const details = document.createElement("details");
+            details.className = "agent-step-details";
+            const summary = document.createElement("summary");
+            const summaryLabel = document.createElement("span");
+            summaryLabel.textContent = "查看执行详情";
+            const chevron = document.createElement("i");
+            chevron.setAttribute("aria-hidden", "true");
+            chevron.textContent = "⌄";
+            summary.append(summaryLabel, chevron);
+            details.appendChild(summary);
+            appendAgentStepDetail(details, "输入参数", step.toolArguments, false);
+            appendAgentStepDetail(details, "执行结果", step.toolResult, false);
+            appendAgentStepDetail(details, "错误信息", step.errorMessage, true);
+            card.appendChild(details);
+        }
+
+        item.append(rail, card);
         return item;
+    }
+
+    function renderAgentChainEmpty() {
+        const empty = document.createElement("div");
+        empty.className = "agent-chain-empty";
+        const icon = document.createElement("span");
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = "⌁";
+        const title = document.createElement("strong");
+        title.textContent = "等待任务开始";
+        const hint = document.createElement("small");
+        hint.textContent = "Agent 的规划和工具调用会实时显示在这里";
+        empty.append(icon, title, hint);
+        return empty;
     }
 
     function clearAgentSession() {

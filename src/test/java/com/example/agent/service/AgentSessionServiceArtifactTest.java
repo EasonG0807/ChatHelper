@@ -24,7 +24,7 @@ class AgentSessionServiceArtifactTest {
         AgentSession session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);
-        when(sessionRepository.findByIdAndUserId(10L, 1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.findOwnedForUpdate(10L, 1L)).thenReturn(Optional.of(session));
         AgentSessionService service = new AgentSessionService(
                 sessionRepository, messageRepository, stepRepository, artifactRepository);
 
@@ -44,7 +44,7 @@ class AgentSessionServiceArtifactTest {
         AgentSession session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);
-        when(sessionRepository.findByIdAndUserId(10L, 1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.findOwnedForUpdate(10L, 1L)).thenReturn(Optional.of(session));
         AgentSessionService service = new AgentSessionService(
                 sessionRepository, messageRepository, stepRepository, artifactRepository);
 

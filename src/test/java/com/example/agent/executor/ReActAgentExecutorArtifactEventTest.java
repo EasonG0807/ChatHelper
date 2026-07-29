@@ -1,6 +1,7 @@
 package com.example.agent.executor;
 
 import com.example.agent.service.AgentArtifactService;
+import com.example.agent.service.AgentRunRegistry;
 import com.example.agent.service.AgentStepService;
 import com.example.agent.service.SkillLibraryService;
 import com.example.agent.tool.react.AgentWorkspaceService;
@@ -45,6 +46,7 @@ class ReActAgentExecutorArtifactEventTest {
                 mock(ReactToolRegistry.class),
                 mock(AgentStepService.class),
                 mock(AgentArtifactService.class),
+                new AgentRunRegistry(),
                 new AgentWorkspaceService(tempDir.toString()),
                 mock(SkillLibraryService.class),
                 new ObjectMapper().findAndRegisterModules(),
@@ -77,6 +79,7 @@ class ReActAgentExecutorArtifactEventTest {
                 mock(ReactToolRegistry.class),
                 mock(AgentStepService.class),
                 mock(AgentArtifactService.class),
+                new AgentRunRegistry(),
                 new AgentWorkspaceService(tempDir.toString()),
                 mock(SkillLibraryService.class),
                 new ObjectMapper().findAndRegisterModules(),
@@ -102,7 +105,8 @@ class ReActAgentExecutorArtifactEventTest {
     void terminalErrorEventIsStructured() {
         ReActAgentExecutor executor = new ReActAgentExecutor(
                 mock(ChatModel.class), mock(ReactToolRegistry.class), mock(AgentStepService.class),
-                mock(AgentArtifactService.class), new AgentWorkspaceService(tempDir.toString()),
+                mock(AgentArtifactService.class), new AgentRunRegistry(),
+                new AgentWorkspaceService(tempDir.toString()),
                 mock(SkillLibraryService.class), new ObjectMapper(), 8);
 
         String event = executor.terminalErrorEvent("connection failed");
@@ -129,7 +133,8 @@ class ReActAgentExecutorArtifactEventTest {
 
         ReActAgentExecutor executor = new ReActAgentExecutor(
                 chatModel, toolRegistry, stepService, mock(AgentArtifactService.class),
-                new AgentWorkspaceService(tempDir.toString()), skillLibraryService, mapper, 8);
+                new AgentRunRegistry(), new AgentWorkspaceService(tempDir.toString()),
+                skillLibraryService, mapper, 8);
 
         List<String> events = executor.executeStream(1L, 10L, 20L, "回答问题", List.of())
                 .collectList().block();

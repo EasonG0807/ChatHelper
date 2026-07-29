@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -72,6 +73,23 @@ public class AgentArtifactController {
                     .body(new FileSystemResource(artifact.path()));
         } catch (AgentArtifactNotFoundException notFound) {
             return ResponseEntity.notFound().build();
+        }
+    }
+
+    @DeleteMapping("/artifacts/{artifactId}")
+    @ResponseBody
+    public ResponseEntity<?> delete(@PathVariable Long artifactId, HttpSession httpSession) {
+        Long userId = (Long) httpSession.getAttribute("uid");
+        if (userId == null) {
+            return ResponseEntity.status(401).body("Please login first.");
+        }
+        try {
+            artifactService.deleteOwned(userId, artifactId);
+            return ResponseEntity.noContent().build();
+        } catch (AgentArtifactNotFoundException notFound) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException deleteFailure) {
+            return ResponseEntity.status(409).body("产出文件暂时无法删除，请稍后重试。");
         }
     }
 }

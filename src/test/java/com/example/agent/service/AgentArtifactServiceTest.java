@@ -33,6 +33,7 @@ class AgentArtifactServiceTest {
     private AgentArtifactRepository artifactRepository;
     private AgentSessionRepository sessionRepository;
     private AgentWorkspaceService workspaceService;
+    private AgentRunRegistry runRegistry;
     private AgentArtifactService service;
 
     @BeforeEach
@@ -40,12 +41,14 @@ class AgentArtifactServiceTest {
         artifactRepository = mock(AgentArtifactRepository.class);
         sessionRepository = mock(AgentSessionRepository.class);
         workspaceService = new AgentWorkspaceService(tempDir.resolve("workspace").toString());
-        service = new AgentArtifactService(artifactRepository, sessionRepository, workspaceService);
+        runRegistry = new AgentRunRegistry();
+        service = new AgentArtifactService(artifactRepository, sessionRepository, workspaceService, runRegistry);
 
         AgentSession session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);
         when(sessionRepository.findByIdAndUserId(10L, 1L)).thenReturn(Optional.of(session));
+        when(sessionRepository.findOwnedForUpdate(10L, 1L)).thenReturn(Optional.of(session));
         when(artifactRepository.save(any(AgentArtifact.class))).thenAnswer(invocation -> {
             AgentArtifact artifact = invocation.getArgument(0);
             artifact.setId(42L);
@@ -128,6 +131,98 @@ class AgentArtifactServiceTest {
         when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
 
         assertThrows(AgentArtifactNotFoundException.class, () -> service.openOwned(1L, 42L));
+    }
+
+    @Test
+    void deletesOwnedArtifactFileMetadataAndEmptyStorageDirectory() throws Exception {
+        Path workspace = workspaceService.workspace(1L, 10L);
+        Path file = workspaceService.createArtifactPath(workspace, "报告.pdf");
+        Files.createDirectories(file.getParent());
+        Files.write(file, new byte[]{1, 2, 3});
+
+        AgentArtifact artifact = artifact(42L);
+        artifact.setFileName("报告.pdf");
+        artifact.setRelativePath(workspaceService.toStoredRelativePath(workspace.toRealPath(), file.toRealPath()));
+        when(artifactRepository.findOwnedForUpdate(42L, 1L)).thenReturn(Optional.of(artifact));
+        when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
+
+        service.deleteOwned(1L, 42L);
+
+        verify(artifactRepository).delete(artifact);
+        verify(artifactRepository).flush();
+        assertFalse(Files.exists(file));
+        assertFalse(Files.exists(file.getParent()));
+        assertTrue(Files.isDirectory(workspace.resolve("artifacts")));
+    }
+
+    @Test
+    void deletesStaleMetadataWhenPhysicalFileIsAlreadyMissing() {
+        AgentArtifact artifact = artifact(42L);
+        artifact.setRelativePath("artifacts/missing/report.pdf");
+        when(artifactRepository.findOwnedForUpdate(42L, 1L)).thenReturn(Optional.of(artifact));
+        when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
+
+        service.deleteOwned(1L, 42L);
+
+        verify(artifactRepository).delete(artifact);
+        verify(artifactRepository).flush();
+    }
+
+    @Test
+    void keepsPhysicalFileWhileAnotherMetadataRowReferencesIt() throws Exception {
+        Path workspace = workspaceService.workspace(1L, 10L);
+        Path file = workspaceService.createArtifactPath(workspace, "shared.pdf");
+        Files.createDirectories(file.getParent());
+        Files.write(file, new byte[]{1});
+
+        AgentArtifact artifact = artifact(42L);
+        artifact.setRelativePath(workspaceService.toStoredRelativePath(workspace.toRealPath(), file.toRealPath()));
+        when(artifactRepository.findOwnedForUpdate(42L, 1L)).thenReturn(Optional.of(artifact));
+        when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
+        when(artifactRepository.existsByUserIdAndSessionIdAndRelativePathAndIdNot(
+                1L, 10L, artifact.getRelativePath(), 42L)).thenReturn(true);
+
+        service.deleteOwned(1L, 42L);
+
+        assertTrue(Files.isRegularFile(file));
+        verify(artifactRepository).delete(artifact);
+    }
+
+    @Test
+    void rejectsTraversalMetadataWithoutTouchingOutsideFile() throws Exception {
+        Path outside = tempDir.resolve("outside.pdf");
+        Files.write(outside, new byte[]{9});
+        AgentArtifact artifact = artifact(42L);
+        artifact.setRelativePath("../../outside.pdf");
+        when(artifactRepository.findOwnedForUpdate(42L, 1L)).thenReturn(Optional.of(artifact));
+        when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
+
+        assertThrows(IllegalStateException.class, () -> service.deleteOwned(1L, 42L));
+
+        assertTrue(Files.isRegularFile(outside));
+    }
+
+    @Test
+    void hidesOtherUsersArtifactDeletionAsNotFound() {
+        when(artifactRepository.findByIdAndUserId(42L, 2L)).thenReturn(Optional.empty());
+        when(artifactRepository.findOwnedForUpdate(42L, 2L)).thenReturn(Optional.empty());
+
+        assertThrows(AgentArtifactNotFoundException.class, () -> service.deleteOwned(2L, 42L));
+
+        verify(artifactRepository, never()).delete(any());
+    }
+
+    @Test
+    void rejectsDeletionWhileTheSessionStillHasAnActiveRun() {
+        AgentArtifact artifact = artifact(42L);
+        artifact.setRelativePath("artifacts/report.pdf");
+        when(artifactRepository.findByIdAndUserId(42L, 1L)).thenReturn(Optional.of(artifact));
+
+        try (AgentRunRegistry.Lease ignored = runRegistry.beginRun(1L, 10L)) {
+            assertThrows(IllegalStateException.class, () -> service.deleteOwned(1L, 42L));
+        }
+
+        verify(artifactRepository, never()).delete(any());
     }
 
     private AgentArtifact artifact(Long id) {

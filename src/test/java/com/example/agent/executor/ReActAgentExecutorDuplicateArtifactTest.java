@@ -2,6 +2,7 @@ package com.example.agent.executor;
 
 import com.example.agent.entity.AgentToolSource;
 import com.example.agent.service.AgentArtifactService;
+import com.example.agent.service.AgentRunRegistry;
 import com.example.agent.service.AgentStepService;
 import com.example.agent.service.SkillLibraryService;
 import com.example.agent.tool.react.AgentWorkspaceService;
@@ -73,7 +74,7 @@ class ReActAgentExecutorDuplicateArtifactTest {
         when(artifactService.register(any(), any(), any())).thenReturn(artifact);
 
         ReActAgentExecutor executor = new ReActAgentExecutor(
-                chatModel, toolRegistry, stepService, artifactService, workspaceService,
+                chatModel, toolRegistry, stepService, artifactService, new AgentRunRegistry(), workspaceService,
                 skillLibraryService, new ObjectMapper(), 8);
 
         List<String> events = executor.executeStream(1L, 10L, 20L, "生成 PDF", List.of())

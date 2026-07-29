@@ -10,6 +10,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.MediaTypeFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,6 +20,7 @@ import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -26,6 +29,7 @@ public class AgentArtifactService {
     private final AgentArtifactRepository artifactRepository;
     private final AgentSessionRepository sessionRepository;
     private final AgentWorkspaceService workspaceService;
+    private final AgentRunRegistry runRegistry;
 
     @Transactional
     public ArtifactView register(ToolExecutionContext context, String toolName, String artifactPath) {
@@ -35,7 +39,7 @@ public class AgentArtifactService {
         if (artifactPath == null || artifactPath.isBlank()) {
             throw new IllegalArgumentException("Artifact path is required.");
         }
-        ensureOwnedSession(context.userId(), context.sessionId());
+        ensureOwnedSessionForUpdate(context.userId(), context.sessionId());
 
         Path workspace = context.workspaceRoot().toAbsolutePath().normalize();
         Path candidate = Path.of(artifactPath).toAbsolutePath().normalize();
@@ -119,9 +123,63 @@ public class AgentArtifactService {
         }
     }
 
+    @Transactional
+    public void deleteOwned(Long userId, Long artifactId) {
+        if (userId == null || artifactId == null) {
+            throw notFound();
+        }
+        AgentArtifact candidate = artifactRepository.findByIdAndUserId(artifactId, userId)
+                .orElseThrow(this::notFound);
+        AgentRunRegistry.Lease mutationLease = runRegistry
+                .tryBeginArtifactMutation(userId, candidate.getSessionId())
+                .orElseThrow(() -> new IllegalStateException("Agent execution is still active."));
+        boolean closeLeaseDirectly = !TransactionSynchronizationManager.isSynchronizationActive();
+        if (!closeLeaseDirectly) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    mutationLease.close();
+                }
+            });
+        }
+        try {
+            if (sessionRepository.findOwnedForUpdate(candidate.getSessionId(), userId).isEmpty()) {
+                throw notFound();
+            }
+            AgentArtifact artifact = artifactRepository.findOwnedForUpdate(artifactId, userId)
+                    .filter(locked -> Objects.equals(locked.getSessionId(), candidate.getSessionId()))
+                    .orElseThrow(this::notFound);
+
+            boolean sharedFile = artifactRepository.existsByUserIdAndSessionIdAndRelativePathAndIdNot(
+                    artifact.getUserId(), artifact.getSessionId(), artifact.getRelativePath(), artifact.getId());
+            artifactRepository.delete(artifact);
+            artifactRepository.flush();
+
+            if (!sharedFile) {
+                try {
+                    workspaceService.deleteStoredArtifact(
+                            artifact.getUserId(), artifact.getSessionId(), artifact.getRelativePath());
+                } catch (IllegalArgumentException invalidPath) {
+                    throw new IllegalStateException("Artifact path validation failed.", invalidPath);
+                }
+            }
+        } finally {
+            if (closeLeaseDirectly) {
+                mutationLease.close();
+            }
+        }
+    }
+
     private void ensureOwnedSession(Long userId, Long sessionId) {
         if (userId == null || sessionId == null
                 || sessionRepository.findByIdAndUserId(sessionId, userId).isEmpty()) {
+            throw new IllegalArgumentException("Agent session not found.");
+        }
+    }
+
+    private void ensureOwnedSessionForUpdate(Long userId, Long sessionId) {
+        if (userId == null || sessionId == null
+                || sessionRepository.findOwnedForUpdate(sessionId, userId).isEmpty()) {
             throw new IllegalArgumentException("Agent session not found.");
         }
     }

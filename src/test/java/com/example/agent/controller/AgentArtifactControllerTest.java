@@ -16,7 +16,10 @@ import java.util.List;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -42,6 +45,8 @@ class AgentArtifactControllerTest {
         mockMvc.perform(get("/agent/artifacts").param("sessionId", "10"))
                 .andExpect(status().isUnauthorized());
         mockMvc.perform(get("/agent/artifacts/42/content"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(delete("/agent/artifacts/42"))
                 .andExpect(status().isUnauthorized());
     }
 
@@ -87,5 +92,32 @@ class AgentArtifactControllerTest {
 
         mockMvc.perform(get("/agent/artifacts/42/content").sessionAttr("uid", 2L))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void deletesOwnedArtifact() throws Exception {
+        mockMvc.perform(delete("/agent/artifacts/42").sessionAttr("uid", 1L))
+                .andExpect(status().isNoContent());
+
+        verify(artifactService).deleteOwned(1L, 42L);
+    }
+
+    @Test
+    void returnsNotFoundWhenDeletingUnownedArtifact() throws Exception {
+        doThrow(new AgentArtifactNotFoundException("Artifact not found."))
+                .when(artifactService).deleteOwned(2L, 42L);
+
+        mockMvc.perform(delete("/agent/artifacts/42").sessionAttr("uid", 2L))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void returnsConflictWithoutLeakingPathWhenFileCannotBeDeleted() throws Exception {
+        doThrow(new IllegalStateException("D:/private/workspace/report.pdf is locked"))
+                .when(artifactService).deleteOwned(1L, 42L);
+
+        mockMvc.perform(delete("/agent/artifacts/42").sessionAttr("uid", 1L))
+                .andExpect(status().isConflict())
+                .andExpect(content().string(not(containsString("D:/private"))));
     }
 }

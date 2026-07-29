@@ -2,6 +2,7 @@ package com.example.agent.executor;
 
 import com.example.agent.entity.AgentToolSource;
 import com.example.agent.service.AgentArtifactService;
+import com.example.agent.service.AgentRunRegistry;
 import com.example.agent.service.AgentStepService;
 import com.example.agent.service.SkillLibraryService;
 import com.example.agent.tool.react.AgentWorkspaceService;
@@ -61,6 +62,7 @@ public class ReActAgentExecutor {
     private final ReactToolRegistry toolRegistry;
     private final AgentStepService stepService;
     private final AgentArtifactService artifactService;
+    private final AgentRunRegistry runRegistry;
     private final AgentWorkspaceService workspaceService;
     private final SkillLibraryService skillLibraryService;
     private final ObjectMapper objectMapper;
@@ -70,6 +72,7 @@ public class ReActAgentExecutor {
                               ReactToolRegistry toolRegistry,
                               AgentStepService stepService,
                               AgentArtifactService artifactService,
+                              AgentRunRegistry runRegistry,
                               AgentWorkspaceService workspaceService,
                               SkillLibraryService skillLibraryService,
                               ObjectMapper objectMapper,
@@ -78,6 +81,7 @@ public class ReActAgentExecutor {
         this.toolRegistry = toolRegistry;
         this.stepService = stepService;
         this.artifactService = artifactService;
+        this.runRegistry = runRegistry;
         this.workspaceService = workspaceService;
         this.skillLibraryService = skillLibraryService;
         this.objectMapper = objectMapper;
@@ -92,12 +96,13 @@ public class ReActAgentExecutor {
         return Flux.defer(() -> {
             StreamRun run = StreamRun.create(messageId);
             Flux<String> execution = Flux.<String>create(sink -> {
-                try {
+                try (AgentRunRegistry.Lease ignored = runRegistry.beginRun(userId, sessionId)) {
                     runLoop(sink, run, userId, sessionId, messageId, question, history);
-                    sink.complete();
                 } catch (Exception ex) {
                     sink.error(ex);
+                    return;
                 }
+                sink.complete();
             }).subscribeOn(Schedulers.boundedElastic());
 
             // Planner and tool calls are intentionally blocking. A heartbeat
