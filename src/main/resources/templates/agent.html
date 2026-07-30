@@ -1535,6 +1535,9 @@
     function closeMemoryManager() {
         const dialog = document.getElementById("agentMemoryDialog");
         if (dialog.open) dialog.close();
+        if (window.location.hash === "#memory-manager") {
+            window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+        }
     }
 
     async function memoryApi(url, options) {
@@ -1926,6 +1929,15 @@
         const box = document.getElementById("agentChatBox");
         box.scrollTop = box.scrollHeight;
     }
+
+    function openAgentPageTarget() {
+        if (window.location.hash === "#memory-manager") {
+            openMemoryManager();
+        }
+    }
+
+    window.addEventListener("DOMContentLoaded", openAgentPageTarget);
+    window.addEventListener("hashchange", openAgentPageTarget);
 </script>
 
 </body>
