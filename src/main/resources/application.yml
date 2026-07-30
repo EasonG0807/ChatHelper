@@ -138,7 +138,8 @@ rag:
         # Cross-encoder rerank API. Off by default; set RAG_RERANK_API_ENABLED=true
         # and RAG_RERANK_API_KEY to activate. The default endpoint/model target
         # SiliconFlow; Jina and Cohere share the same /rerank contract.
-        enabled: ${RAG_RERANK_API_ENABLED:false}
+#        enabled: ${RAG_RERANK_API_ENABLED:false}
+        enabled: ${RAG_RERANK_API_ENABLED:ture}
         base-url: ${RAG_RERANK_API_BASE_URL:https://api.siliconflow.cn/v1}
         api-key: ${RAG_RERANK_API_KEY:}
         model: ${RAG_RERANK_API_MODEL:BAAI/bge-reranker-v2-m3}
