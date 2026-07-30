@@ -67,6 +67,73 @@ public class AgentMemoryController {
         }
     }
 
+    @GetMapping("/{memoryId}/versions")
+    public ResponseEntity<?> versions(@PathVariable Long memoryId, HttpSession httpSession) {
+        Long userId = userId(httpSession);
+        if (userId == null) {
+            return unauthorized();
+        }
+        try {
+            return ResponseEntity.ok(memoryService.listVersions(userId, memoryId));
+        } catch (AgentMemoryService.AgentMemoryNotFoundException ex) {
+            return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/{memoryId}/verify")
+    public ResponseEntity<?> verify(@PathVariable Long memoryId, HttpSession httpSession) {
+        Long userId = userId(httpSession);
+        if (userId == null) {
+            return unauthorized();
+        }
+        try {
+            return ResponseEntity.ok(memoryService.verifyMemory(userId, memoryId));
+        } catch (AgentMemoryService.AgentMemoryNotFoundException ex) {
+            return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(Map.of("message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/{memoryId}/invalidate")
+    public ResponseEntity<?> invalidate(@PathVariable Long memoryId,
+                                        @RequestBody(required = false) MemoryActionRequest request,
+                                        HttpSession httpSession) {
+        Long userId = userId(httpSession);
+        if (userId == null) {
+            return unauthorized();
+        }
+        try {
+            String reason = request == null ? null : request.reason();
+            return ResponseEntity.ok(memoryService.invalidateMemory(userId, memoryId, reason));
+        } catch (AgentMemoryService.AgentMemoryNotFoundException ex) {
+            return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(Map.of("message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/{memoryId}/resolve")
+    public ResponseEntity<?> resolve(@PathVariable Long memoryId,
+                                     @RequestBody MemoryActionRequest request,
+                                     HttpSession httpSession) {
+        Long userId = userId(httpSession);
+        if (userId == null) {
+            return unauthorized();
+        }
+        try {
+            if (request == null || request.action() == null || request.action().isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("message", "请选择冲突处理方式"));
+            }
+            return ResponseEntity.ok(memoryService.resolveConflict(
+                    userId, memoryId, request.action(), request.reason()));
+        } catch (AgentMemoryService.AgentMemoryNotFoundException ex) {
+            return ResponseEntity.status(404).body(Map.of("message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            return ResponseEntity.badRequest().body(Map.of("message", ex.getMessage()));
+        }
+    }
+
     @PostMapping("/clear")
     public ResponseEntity<?> clearSession(@RequestParam Long sessionId, HttpSession httpSession) {
         Long userId = userId(httpSession);
@@ -105,5 +172,8 @@ public class AgentMemoryController {
                                       String scope,
                                       Long sessionId,
                                       LocalDateTime expiresAt) {
+    }
+
+    public record MemoryActionRequest(String action, String reason) {
     }
 }

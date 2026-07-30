@@ -1129,6 +1129,16 @@ th { background: rgba(126,162,255,.22); color: #e0e9ff; }
   opacity: .68;
 }
 
+.agent-memory-card.status-conflicted {
+  border-color: rgba(255, 187, 92, .55);
+  background: rgba(86, 52, 7, .18);
+}
+
+.agent-memory-card.status-invalidated,
+.agent-memory-card.stale {
+  border-color: rgba(255, 112, 133, .28);
+}
+
 .agent-memory-card-header,
 .agent-memory-badges,
 .agent-memory-card-actions,
@@ -1173,6 +1183,34 @@ th { background: rgba(126,162,255,.22); color: #e0e9ff; }
   color: #ff9eac;
 }
 
+.agent-memory-badge.status.active,
+.agent-memory-badge.verification.verified {
+  border-color: rgba(85, 225, 157, .35);
+  background: rgba(85, 225, 157, .1);
+  color: #8ef0bd;
+}
+
+.agent-memory-badge.status.conflicted,
+.agent-memory-badge.verification.stale {
+  border-color: rgba(255, 187, 92, .42);
+  background: rgba(255, 187, 92, .11);
+  color: #ffd08a;
+}
+
+.agent-memory-badge.status.invalidated,
+.agent-memory-badge.status.expired,
+.agent-memory-badge.verification.rejected {
+  border-color: rgba(255, 112, 133, .35);
+  background: rgba(255, 112, 133, .1);
+  color: #ff9eac;
+}
+
+.agent-memory-badge.version {
+  border-color: rgba(255, 255, 255, .15);
+  background: rgba(255, 255, 255, .05);
+  color: var(--muted);
+}
+
 .agent-memory-card-actions button {
   padding: 2px 4px;
   border: 0;
@@ -1205,6 +1243,36 @@ th { background: rgba(126,162,255,.22); color: #e0e9ff; }
   font-size: 10px;
   line-height: 1.4;
 }
+
+.agent-memory-reason {
+  margin-top: 9px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  background: rgba(255, 112, 133, .08);
+  color: #ffb1bd;
+  font-size: 11px;
+}
+
+.agent-memory-history {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-memory-history-row {
+  display: grid;
+  grid-template-columns: 105px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, .06);
+}
+
+.agent-memory-history-row strong { color: var(--text); }
+.agent-memory-history-row span { overflow-wrap: anywhere; }
+.agent-memory-history-row small { white-space: nowrap; }
 
 .agent-memory-footer {
   justify-content: flex-end;

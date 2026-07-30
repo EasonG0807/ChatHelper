@@ -1,6 +1,8 @@
 package com.example.agent.service;
 
 import com.example.agent.entity.AgentMemory;
+import com.example.agent.entity.AgentMemoryStatus;
+import com.example.agent.entity.AgentMemoryVerificationStatus;
 import com.example.agent.repository.AgentMemoryRepository;
 import com.example.agent.repository.AgentSessionRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -8,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,15 +44,28 @@ public class AgentMemoryService {
     private final AgentSessionRepository sessionRepository;
     private final ChatModel chatModel;
     private final ObjectMapper objectMapper;
+    private final AgentMemoryLifecycleService lifecycleService;
 
+    @Autowired
     public AgentMemoryService(AgentMemoryRepository memoryRepository,
                               AgentSessionRepository sessionRepository,
                               @Qualifier("agentDeepSeekChatModel") ChatModel chatModel,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              AgentMemoryLifecycleService lifecycleService) {
         this.memoryRepository = memoryRepository;
         this.sessionRepository = sessionRepository;
         this.chatModel = chatModel;
         this.objectMapper = objectMapper;
+        this.lifecycleService = lifecycleService;
+    }
+
+    /** Kept for focused unit construction outside Spring. */
+    public AgentMemoryService(AgentMemoryRepository memoryRepository,
+                              AgentSessionRepository sessionRepository,
+                              ChatModel chatModel,
+                              ObjectMapper objectMapper) {
+        this(memoryRepository, sessionRepository, chatModel, objectMapper,
+                new AgentMemoryLifecycleService(memoryRepository));
     }
 
     @Value("${agent.memory.enabled:true}")
@@ -65,7 +81,7 @@ public class AgentMemoryService {
         if (!enabled || userId == null) {
             return List.of();
         }
-        return memoryRepository.findByUserIdAndActiveTrueOrderByImportanceDescUpdatedAtDesc(userId);
+        return lifecycleService.listCurrentForRetrieval(userId);
     }
 
     /** Returns management-safe views without exposing the owning user id. */
@@ -74,7 +90,7 @@ public class AgentMemoryService {
             return List.of();
         }
         LocalDateTime now = LocalDateTime.now();
-        return memoryRepository.findByUserIdAndActiveTrueOrderByImportanceDescUpdatedAtDesc(userId).stream()
+        return lifecycleService.listForManagement(userId).stream()
                 .map(memory -> MemoryView.from(memory, now))
                 .toList();
     }
@@ -88,7 +104,7 @@ public class AgentMemoryService {
         LocalDateTime now = LocalDateTime.now();
         int safeLimit = Math.max(1, Math.min(limit, maxRetrievedItems));
         List<ScoredMemory> scored = new ArrayList<>();
-        for (AgentMemory memory : memoryRepository.findByUserIdAndActiveTrueOrderByImportanceDescUpdatedAtDesc(userId)) {
+        for (AgentMemory memory : lifecycleService.listCurrentForRetrieval(userId)) {
             if (memory.getSessionId() != null && !memory.getSessionId().equals(sessionId)) {
                 continue;
             }
@@ -108,11 +124,13 @@ public class AgentMemoryService {
             }
         }
 
-        return scored.stream()
+        List<AgentMemory> result = scored.stream()
                 .sorted(Comparator.comparingDouble(ScoredMemory::score).reversed())
                 .limit(safeLimit)
                 .map(ScoredMemory::memory)
                 .toList();
+        lifecycleService.touch(result);
+        return result;
     }
 
     /** Schedule extraction after the user-facing response has completed. */
@@ -181,13 +199,10 @@ public class AgentMemoryService {
             }
         }
 
-        memory.setMemoryType(type);
-        memory.setContent(content);
-        memory.setImportance(importance);
-        memory.setSessionId(targetSessionId);
-        memory.setExpiresAt(update.expiresAt());
-        memory.setActive(true);
-        return MemoryView.from(memoryRepository.save(memory), LocalDateTime.now());
+        AgentMemory replacement = lifecycleService.manualReplace(userId, memoryId,
+                new AgentMemoryLifecycleService.ManualRevision(
+                        type, content, importance, scope, targetSessionId, update.expiresAt()));
+        return MemoryView.from(replacement, LocalDateTime.now());
     }
 
     @Transactional
@@ -195,9 +210,26 @@ public class AgentMemoryService {
         if (userId == null || memoryId == null) {
             throw new AgentMemoryNotFoundException();
         }
-        AgentMemory memory = memoryRepository.findByIdAndUserId(memoryId, userId)
-                .orElseThrow(AgentMemoryNotFoundException::new);
-        memoryRepository.delete(memory);
+        lifecycleService.deleteSemanticMemory(userId, memoryId);
+    }
+
+    public List<MemoryView> listVersions(Long userId, Long memoryId) {
+        LocalDateTime now = LocalDateTime.now();
+        return lifecycleService.versions(userId, memoryId).stream()
+                .map(memory -> MemoryView.from(memory, now))
+                .toList();
+    }
+
+    public MemoryView verifyMemory(Long userId, Long memoryId) {
+        return MemoryView.from(lifecycleService.verify(userId, memoryId), LocalDateTime.now());
+    }
+
+    public MemoryView invalidateMemory(Long userId, Long memoryId, String reason) {
+        return MemoryView.from(lifecycleService.invalidate(userId, memoryId, reason), LocalDateTime.now());
+    }
+
+    public MemoryView resolveConflict(Long userId, Long memoryId, String action, String reason) {
+        return MemoryView.from(lifecycleService.resolveConflict(userId, memoryId, action, reason), LocalDateTime.now());
     }
 
     @Transactional
@@ -212,6 +244,7 @@ public class AgentMemoryService {
                                    Long sourceMessageId,
                                    String userMessage,
                                    String assistantMessage) {
+        String memoryCatalog = lifecycleService.buildCatalog(userId, sessionId);
         String raw = ChatClient.create(chatModel)
                 .prompt()
                 .system("""
@@ -220,11 +253,29 @@ public class AgentMemoryService {
                         Record only stable, useful information: user preferences, project facts,
                         technical decisions, constraints, unresolved TODOs, or important task episodes.
                         Do not record greetings, temporary wording, secrets, credentials, or guesses.
-                        Each item must have: type, key, content, importance (0-100), confidence (0-1), scope (USER or SESSION), ttlDays (optional).
+                        Do not store transient runtime errors, service availability, file existence,
+                        dependency availability or environment health as durable memory. Those states
+                        must be checked from their source of truth when needed.
+                        Each item must have: type, subject, predicate, value, content,
+                        importance (0-100), confidence (0-1), scope (USER or SESSION),
+                        operation, targetKey, sourceType, ttlDays (optional), verificationTtlDays (optional).
                         Valid types: USER_PREFERENCE, PROJECT_FACT, DECISION, TODO, CONSTRAINT, EPISODIC.
+                        Valid operations:
+                        - NEW: no existing fact describes this subject and predicate.
+                        - CONFIRM: the conversation confirms an existing fact with the same value.
+                        - REPLACE: an explicit newer fact replaces an existing fact.
+                        - INVALIDATE: an existing fact is explicitly no longer true and has no replacement.
+                        - CONFLICT: the new statement contradicts an existing fact but the newer truth is uncertain.
+                        Use the exact existing key as targetKey for CONFIRM, REPLACE, INVALIDATE or CONFLICT.
+                        Do not invent a different key for an existing subject and predicate.
+                        subject and predicate must be short stable semantic identifiers, not full sentences.
+                        sourceType must be USER, ASSISTANT or TOOL according to where the fact came from.
                         If there is nothing durable, return [].
                         """)
                 .user("""
+                        Current active memory catalog:
+                        %s
+
                         User message:
                         %s
 
@@ -232,7 +283,8 @@ public class AgentMemoryService {
                         %s
 
                         Extract only memories that are safe and useful for future context.
-                        """.formatted(nullToEmpty(userMessage), nullToEmpty(assistantMessage)))
+                        """.formatted(memoryCatalog.isBlank() ? "(empty)" : memoryCatalog,
+                        nullToEmpty(userMessage), nullToEmpty(assistantMessage)))
                 .call()
                 .content();
 
@@ -271,28 +323,37 @@ public class AgentMemoryService {
         }
 
         content = truncate(content, MAX_MEMORY_CONTENT_LENGTH);
-        String key = node.path("key").asText("").trim();
-        if (key.isBlank()) {
-            key = normalizeKey(type + ":" + content);
+        String scope = node.path("scope").asText("SESSION").trim().toUpperCase(Locale.ROOT);
+        Long targetSessionId = "USER".equals(scope) ? null : sessionId;
+        String targetKey = node.path("targetKey").asText("").trim();
+        if (targetKey.isBlank()) {
+            targetKey = node.path("key").asText("").trim();
         }
+        AgentMemory saved = lifecycleService.ingest(userId, sourceMessageId,
+                new AgentMemoryLifecycleService.MemoryCandidate(
+                        type,
+                        node.path("subject").asText("").trim(),
+                        node.path("predicate").asText("").trim(),
+                        node.path("value").asText(content).trim(),
+                        content,
+                        node.path("importance").asInt(50),
+                        node.path("confidence").asDouble(0.7),
+                        scope,
+                        targetSessionId,
+                        node.path("operation").asText("NEW"),
+                        targetKey,
+                        node.path("sourceType").asText("ASSISTANT"),
+                        optionalPositiveInt(node, "ttlDays"),
+                        optionalPositiveInt(node, "verificationTtlDays")));
+        return saved != null;
+    }
 
-        AgentMemory memory = memoryRepository
-                .findFirstByUserIdAndMemoryKeyAndActiveTrue(userId, normalizeKey(key))
-                .orElseGet(AgentMemory::new);
-        memory.setUserId(userId);
-        memory.setSessionId("USER".equalsIgnoreCase(node.path("scope").asText("SESSION"))
-                ? null : sessionId);
-        memory.setSourceMessageId(sourceMessageId);
-        memory.setMemoryType(type);
-        memory.setContent(content);
-        memory.setMemoryKey(normalizeKey(key));
-        memory.setImportance((int) clamp(node.path("importance").asInt(50), 0, 100));
-        memory.setConfidence(clamp(node.path("confidence").asDouble(0.7), 0.0, 1.0));
-        memory.setActive(true);
-        int ttlDays = node.path("ttlDays").asInt(0);
-        memory.setExpiresAt(ttlDays > 0 ? LocalDateTime.now().plusDays(Math.min(ttlDays, 365)) : null);
-        memoryRepository.save(memory);
-        return true;
+    private Integer optionalPositiveInt(JsonNode node, String field) {
+        if (node == null || !node.has(field)) {
+            return null;
+        }
+        int value = node.path(field).asInt(0);
+        return value > 0 ? value : null;
     }
 
     private Set<String> terms(String text) {
@@ -365,10 +426,45 @@ public class AgentMemoryService {
                              LocalDateTime expiresAt,
                              LocalDateTime createdAt,
                              LocalDateTime updatedAt,
-                             boolean expired) {
+                             boolean expired,
+                             String status,
+                             String verificationStatus,
+                             Integer version,
+                             String subjectKey,
+                             String predicateKey,
+                             Long supersedesId,
+                             Long replacedById,
+                             Long conflictWithId,
+                             LocalDateTime lastVerifiedAt,
+                             LocalDateTime verificationDueAt,
+                             String invalidationReason,
+                             String sourceType) {
+
+        /** Backward-compatible constructor for existing controller tests and callers. */
+        public MemoryView(Long id,
+                          String memoryType,
+                          String content,
+                          String memoryKey,
+                          Integer importance,
+                          Double confidence,
+                          String scope,
+                          Long sessionId,
+                          LocalDateTime expiresAt,
+                          LocalDateTime createdAt,
+                          LocalDateTime updatedAt,
+                          boolean expired) {
+            this(id, memoryType, content, memoryKey, importance, confidence, scope, sessionId,
+                    expiresAt, createdAt, updatedAt, expired, "ACTIVE", "UNVERIFIED", 1,
+                    null, null, null, null, null, null, null, null, null);
+        }
 
         private static MemoryView from(AgentMemory memory, LocalDateTime now) {
             LocalDateTime expiresAt = memory.getExpiresAt();
+            AgentMemoryStatus status = memory.getStatus() == null
+                    ? (Boolean.FALSE.equals(memory.getActive()) ? AgentMemoryStatus.INVALIDATED : AgentMemoryStatus.ACTIVE)
+                    : memory.getStatus();
+            AgentMemoryVerificationStatus verificationStatus = memory.getVerificationStatus() == null
+                    ? AgentMemoryVerificationStatus.UNVERIFIED : memory.getVerificationStatus();
             return new MemoryView(
                     memory.getId(),
                     memory.getMemoryType(),
@@ -381,7 +477,19 @@ public class AgentMemoryService {
                     expiresAt,
                     memory.getCreatedAt(),
                     memory.getUpdatedAt(),
-                    expiresAt != null && expiresAt.isBefore(now));
+                    status == AgentMemoryStatus.EXPIRED || (expiresAt != null && expiresAt.isBefore(now)),
+                    status.name(),
+                    verificationStatus.name(),
+                    memory.getVersion(),
+                    memory.getSubjectKey(),
+                    memory.getPredicateKey(),
+                    memory.getSupersedesId(),
+                    memory.getReplacedById(),
+                    memory.getConflictWithId(),
+                    memory.getLastVerifiedAt(),
+                    memory.getVerificationDueAt(),
+                    memory.getInvalidationReason(),
+                    memory.getSourceType());
         }
     }
 

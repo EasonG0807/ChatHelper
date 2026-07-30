@@ -235,7 +235,7 @@
         <header class="agent-memory-header">
             <div>
                 <h2 id="agentMemoryTitle">长期记忆管理</h2>
-                <p>查看并管理 Agent 为你保留的偏好、项目事实、决定和待办。</p>
+                <p>查看并管理偏好、项目事实、决定和待办。只有“当前事实 + 已确认”的版本会进入后续对话。</p>
             </div>
             <button type="button" class="agent-memory-close" onclick="closeMemoryManager()" aria-label="关闭">✕</button>
         </header>
@@ -269,7 +269,7 @@
         <header class="agent-memory-header">
             <div>
                 <h2 id="agentMemoryEditTitle">编辑记忆</h2>
-                <p>修改后会直接影响后续对话的记忆召回。</p>
+                <p>事实内容变化时会创建新版本并保留旧版本，不会直接覆盖历史。</p>
             </div>
             <button type="button" class="agent-memory-close" onclick="closeMemoryEditor()" aria-label="关闭">✕</button>
         </header>
@@ -1570,7 +1570,7 @@
         const scopeFilter = document.getElementById("agentMemoryScopeFilter").value;
         const currentSessionId = String(document.getElementById("agentSessionId").value);
         const filtered = agentMemories.filter(memory => {
-            const searchable = `${memory.memoryType || ""} ${memory.content || ""} ${memory.memoryKey || ""}`.toLowerCase();
+            const searchable = `${memory.memoryType || ""} ${memory.content || ""} ${memory.memoryKey || ""} ${memory.status || ""} ${memory.verificationStatus || ""}`.toLowerCase();
             if (query && !searchable.includes(query)) return false;
             if (scopeFilter === "USER" && memory.scope !== "USER") return false;
             if (scopeFilter === "CURRENT" && String(memory.sessionId || "") !== currentSessionId) return false;
@@ -1594,7 +1594,9 @@
 
     function renderMemoryCard(memory, currentSessionId) {
         const card = document.createElement("article");
-        card.className = `agent-memory-card${memory.expired ? " expired" : ""}`;
+        const status = String(memory.status || "ACTIVE").toUpperCase();
+        const verification = String(memory.verificationStatus || "UNVERIFIED").toUpperCase();
+        card.className = `agent-memory-card status-${status.toLowerCase()}${memory.expired ? " expired" : ""}${verification === "STALE" ? " stale" : ""}`;
         card.dataset.memoryId = String(memory.id);
 
         const header = document.createElement("div");
@@ -1605,21 +1607,28 @@
         const isCurrent = memory.scope === "SESSION" && String(memory.sessionId) === currentSessionId;
         const scopeText = memory.scope === "USER" ? "跨会话" : (isCurrent ? "当前会话" : `会话 #${memory.sessionId}`);
         badges.appendChild(memoryBadge(scopeText, "scope"));
+        badges.appendChild(memoryBadge(memoryStatusLabel(status), `status ${status.toLowerCase()}`));
+        badges.appendChild(memoryBadge(`v${Number(memory.version) || 1}`, "version"));
+        if (verification !== "VERIFIED") {
+            badges.appendChild(memoryBadge(memoryVerificationLabel(verification), `verification ${verification.toLowerCase()}`));
+        }
         if (memory.expired) badges.appendChild(memoryBadge("已过期", "expired"));
         header.appendChild(badges);
 
         const actions = document.createElement("div");
         actions.className = "agent-memory-card-actions";
-        const editButton = document.createElement("button");
-        editButton.type = "button";
-        editButton.textContent = "编辑";
-        editButton.onclick = () => openMemoryEditor(memory.id);
-        const deleteButton = document.createElement("button");
-        deleteButton.type = "button";
-        deleteButton.className = "danger";
-        deleteButton.textContent = "删除";
-        deleteButton.onclick = () => deleteMemory(memory.id);
-        actions.append(editButton, deleteButton);
+        actions.appendChild(memoryActionButton("历史", () => toggleMemoryVersions(memory.id)));
+        if (status === "CONFLICTED") {
+            actions.appendChild(memoryActionButton("采用新事实", () => resolveMemoryConflict(memory.id, "ACCEPT_CANDIDATE")));
+            actions.appendChild(memoryActionButton("保留旧事实", () => resolveMemoryConflict(memory.id, "KEEP_CURRENT"), "danger"));
+        } else {
+            if (status === "ACTIVE") {
+                actions.appendChild(memoryActionButton("确认", () => verifyMemory(memory.id)));
+                actions.appendChild(memoryActionButton("失效", () => invalidateMemory(memory.id), "danger"));
+            }
+            actions.appendChild(memoryActionButton("编辑", () => openMemoryEditor(memory.id)));
+            actions.appendChild(memoryActionButton("删除", () => deleteMemory(memory.id), "danger"));
+        }
         header.appendChild(actions);
         card.appendChild(header);
 
@@ -1634,6 +1643,8 @@
         const values = [
             `重要度 ${Number(memory.importance) || 0}`,
             Number.isFinite(confidence) ? `置信度 ${Math.round(confidence * 100)}%` : "",
+            memory.lastVerifiedAt ? `确认 ${formatMemoryDate(memory.lastVerifiedAt)}` : "尚未确认",
+            memory.verificationDueAt ? `复核期限 ${formatMemoryDate(memory.verificationDueAt)}` : "",
             memory.expiresAt ? `过期 ${formatMemoryDate(memory.expiresAt)}` : "永不过期",
             memory.updatedAt ? `更新 ${formatMemoryDate(memory.updatedAt)}` : ""
         ];
@@ -1643,7 +1654,27 @@
             meta.appendChild(span);
         });
         card.appendChild(meta);
+        if (memory.invalidationReason) {
+            const reason = document.createElement("div");
+            reason.className = "agent-memory-reason";
+            reason.textContent = `状态说明：${memory.invalidationReason}`;
+            card.appendChild(reason);
+        }
+        const history = document.createElement("div");
+        history.className = "agent-memory-history";
+        history.dataset.memoryHistory = String(memory.id);
+        history.hidden = true;
+        card.appendChild(history);
         return card;
+    }
+
+    function memoryActionButton(text, handler, kind) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = text;
+        if (kind) button.className = kind;
+        button.onclick = handler;
+        return button;
     }
 
     function memoryBadge(text, kind) {
@@ -1663,6 +1694,27 @@
             EPISODIC: "重要经历"
         };
         return labels[type] || type || "未分类";
+    }
+
+    function memoryStatusLabel(status) {
+        const labels = {
+            ACTIVE: "当前事实",
+            SUPERSEDED: "历史版本",
+            INVALIDATED: "已失效",
+            CONFLICTED: "待处理冲突",
+            EXPIRED: "已过期"
+        };
+        return labels[status] || status || "未知状态";
+    }
+
+    function memoryVerificationLabel(status) {
+        const labels = {
+            VERIFIED: "已确认",
+            UNVERIFIED: "未确认",
+            STALE: "待复核",
+            REJECTED: "已拒绝"
+        };
+        return labels[status] || status || "未确认";
     }
 
     function formatMemoryDate(value) {
@@ -1733,10 +1785,9 @@
                 headers: { "Content-Type": "application/json", "Accept": "application/json" },
                 body: JSON.stringify(payload)
             });
-            agentMemories = agentMemories.map(item => String(item.id) === String(updated.id) ? updated : item);
             closeMemoryEditor();
-            renderMemoryList();
-            setMemoryFeedback("记忆已更新", false);
+            await refreshMemories();
+            setMemoryFeedback(`记忆已更新为 v${Number(updated.version) || 1}`, false);
         } catch (error) {
             document.getElementById("agentMemoryEditFeedback").textContent = error.message || "保存失败";
         } finally {
@@ -1752,11 +1803,91 @@
                 method: "DELETE",
                 headers: { "Accept": "application/json" }
             });
-            agentMemories = agentMemories.filter(item => String(item.id) !== String(memoryId));
-            renderMemoryList();
+            await refreshMemories();
             setMemoryFeedback("记忆已删除", false);
         } catch (error) {
             setMemoryFeedback(error.message || "删除失败", true);
+        }
+    }
+
+    async function verifyMemory(memoryId) {
+        try {
+            await memoryApi(`/agent/memories/${encodeURIComponent(memoryId)}/verify`, {
+                method: "POST",
+                headers: { "Accept": "application/json" }
+            });
+            await refreshMemories();
+            setMemoryFeedback("事实已确认，复核时间已更新", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "确认失败", true);
+        }
+    }
+
+    async function invalidateMemory(memoryId) {
+        const memory = agentMemories.find(item => String(item.id) === String(memoryId));
+        if (!memory || !confirm(`确认将这条事实标记为失效？\n\n${String(memory.content || "").slice(0, 120)}`)) return;
+        const reason = prompt("可填写失效原因：", "事实已发生变化") || "事实已发生变化";
+        try {
+            await memoryApi(`/agent/memories/${encodeURIComponent(memoryId)}/invalidate`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                body: JSON.stringify({ reason })
+            });
+            await refreshMemories();
+            setMemoryFeedback("旧事实已失效，不会再注入 Agent 上下文", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "失效操作失败", true);
+        }
+    }
+
+    async function resolveMemoryConflict(memoryId, action) {
+        const accepting = action === "ACCEPT_CANDIDATE";
+        const message = accepting
+            ? "确认采用新事实并把旧事实转为历史版本？"
+            : "确认保留旧事实并拒绝这条冲突候选？";
+        if (!confirm(message)) return;
+        try {
+            await memoryApi(`/agent/memories/${encodeURIComponent(memoryId)}/resolve`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Accept": "application/json" },
+                body: JSON.stringify({ action, reason: accepting ? "用户确认采用新事实" : "用户确认保留旧事实" })
+            });
+            await refreshMemories();
+            setMemoryFeedback(accepting ? "已采用新事实" : "已保留旧事实", false);
+        } catch (error) {
+            setMemoryFeedback(error.message || "冲突处理失败", true);
+        }
+    }
+
+    async function toggleMemoryVersions(memoryId) {
+        const panel = document.querySelector(`[data-memory-history="${CSS.escape(String(memoryId))}"]`);
+        if (!panel) return;
+        if (!panel.hidden) {
+            panel.hidden = true;
+            return;
+        }
+        panel.hidden = false;
+        panel.textContent = "正在加载版本历史…";
+        try {
+            const versions = await memoryApi(`/agent/memories/${encodeURIComponent(memoryId)}/versions`, {
+                headers: { "Accept": "application/json" }
+            });
+            panel.replaceChildren();
+            (Array.isArray(versions) ? versions : []).forEach(version => {
+                const row = document.createElement("div");
+                row.className = "agent-memory-history-row";
+                const title = document.createElement("strong");
+                title.textContent = `v${Number(version.version) || 1} · ${memoryStatusLabel(version.status)}`;
+                const text = document.createElement("span");
+                text.textContent = version.content || "";
+                const time = document.createElement("small");
+                time.textContent = version.updatedAt ? formatMemoryDate(version.updatedAt) : "";
+                row.append(title, text, time);
+                panel.appendChild(row);
+            });
+            if (!panel.hasChildNodes()) panel.textContent = "暂无版本历史";
+        } catch (error) {
+            panel.textContent = error.message || "版本历史加载失败";
         }
     }
 
