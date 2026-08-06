@@ -20,6 +20,7 @@ Project metadata, dependencies and build configuration.
     <properties>
         <java.version>17</java.version>
         <spring-ai.version>1.0.3</spring-ai.version>
+        <sentry.version>8.50.1</sentry.version>
         <victools-jsonschema.version>4.37.0</victools-jsonschema.version>
     </properties>
 
@@ -140,6 +141,13 @@ Project metadata, dependencies and build configuration.
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-mcp-client</artifactId>
+        </dependency>
+
+        <!-- Application error reporting; MCP reads the events collected by this SDK. -->
+        <dependency>
+            <groupId>io.sentry</groupId>
+            <artifactId>sentry-spring-boot-starter-jakarta</artifactId>
+            <version>${sentry.version}</version>
         </dependency>
 
         <!-- PDF -->

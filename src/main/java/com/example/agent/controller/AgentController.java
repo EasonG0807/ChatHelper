@@ -1,6 +1,10 @@
 package com.example.agent.controller;
 
 import com.example.agent.entity.AgentSession;
+import com.example.agent.entity.AgentMessage;
+import com.example.agent.entity.AgentStep;
+import com.example.agent.entity.AgentStepStatus;
+import com.example.agent.entity.AgentStepType;
 import com.example.agent.entity.AgentToolConfig;
 import com.example.agent.entity.AgentToolSource;
 import com.example.agent.service.AgentService;
@@ -33,9 +37,13 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import reactor.core.publisher.Flux;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Controller
 @RequestMapping("/agent")
@@ -65,11 +73,14 @@ public class AgentController {
 
         toolRegistry.syncToolConfigs();
         AgentSession activeSession = sessionService.getOrCreateSession(userId, sessionId);
+        List<AgentMessage> messages = sessionService.listMessages(activeSession.getId());
+        List<AgentStep> steps = stepService.listSteps(activeSession.getId());
         model.addAttribute("activeSession", activeSession);
         model.addAttribute("skills", skillLibraryService.listActiveSkills(userId));
         model.addAttribute("sessions", sessionService.listActiveSessions(userId));
-        model.addAttribute("messages", sessionService.listMessages(activeSession.getId()));
-        model.addAttribute("steps", stepService.listSteps(activeSession.getId()));
+        model.addAttribute("messages", messages);
+        model.addAttribute("steps", steps);
+        model.addAttribute("stepGroups", groupStepsByMessage(messages, steps));
         model.addAttribute("artifacts", artifactService.list(userId, activeSession.getId()));
         return "agent";
     }
@@ -174,11 +185,23 @@ public class AgentController {
             return "redirect:/agent";
         }
         List<AgentToolConfig> tools = toolManagementService.listTools();
-        model.addAttribute("tools", tools);
-        model.addAttribute("toolCount", tools.size());
-        model.addAttribute("mcpToolCount", tools.stream()
+        List<AgentToolConfig> localTools = tools.stream()
+                .filter(tool -> tool.getToolSource() == AgentToolSource.LOCAL)
+                .toList();
+        List<AgentToolConfig> mcpTools = tools.stream()
                 .filter(tool -> tool.getToolSource() == AgentToolSource.MCP)
-                .count());
+                .toList();
+        List<AgentToolConfig> systemTools = tools.stream()
+                .filter(tool -> tool.getToolSource() == AgentToolSource.SYSTEM)
+                .toList();
+        model.addAttribute("tools", tools);
+        model.addAttribute("localTools", localTools);
+        model.addAttribute("mcpTools", mcpTools);
+        model.addAttribute("systemTools", systemTools);
+        model.addAttribute("toolCount", tools.size());
+        model.addAttribute("localToolCount", localTools.size());
+        model.addAttribute("mcpToolCount", mcpTools.size());
+        model.addAttribute("systemToolCount", systemTools.size());
         model.addAttribute("enabledToolCount", tools.stream()
                 .filter(tool -> Boolean.TRUE.equals(tool.getEnabled()))
                 .count());
@@ -347,5 +370,52 @@ public class AgentController {
                 .map(String::trim)
                 .filter(value -> !value.isBlank())
                 .anyMatch(value -> value.equals(String.valueOf(userId)));
+    }
+
+    private List<AgentStepGroupView> groupStepsByMessage(List<AgentMessage> messages, List<AgentStep> steps) {
+        Map<Long, AgentMessage> userMessages = messages.stream()
+                .filter(message -> "user".equalsIgnoreCase(message.getRole()))
+                .filter(message -> message.getId() != null)
+                .collect(Collectors.toMap(AgentMessage::getId, Function.identity(), (left, right) -> left,
+                        LinkedHashMap::new));
+
+        Map<String, List<AgentStep>> groupedSteps = steps.stream()
+                .collect(Collectors.groupingBy(
+                        step -> step.getMessageId() == null ? "legacy" : String.valueOf(step.getMessageId()),
+                        LinkedHashMap::new,
+                        Collectors.toList()));
+
+        return groupedSteps.values().stream()
+                .map(group -> {
+                    AgentStep firstStep = group.get(0);
+                    Long messageId = firstStep.getMessageId();
+                    AgentMessage userMessage = messageId == null ? null : userMessages.get(messageId);
+                    String question = userMessage == null ? "历史未关联调用" : userMessage.getContent();
+                    LocalDateTime createdAt = userMessage != null && userMessage.getCreatedAt() != null
+                            ? userMessage.getCreatedAt()
+                            : firstStep.getCreatedAt();
+                    return new AgentStepGroupView(messageId, question, createdAt, groupStatus(group), group);
+                })
+                .toList();
+    }
+
+    private String groupStatus(List<AgentStep> steps) {
+        boolean completed = steps.stream().anyMatch(step -> step.getStepType() == AgentStepType.FINAL
+                && step.getStatus() == AgentStepStatus.SUCCESS);
+        if (completed) {
+            return "SUCCESS";
+        }
+        boolean failed = steps.stream().anyMatch(step -> step.getStepType() == AgentStepType.ERROR
+                || step.getStatus() == AgentStepStatus.FAILED);
+        return failed ? "FAILED" : "RUNNING";
+    }
+
+    public record AgentStepGroupView(
+            Long messageId,
+            String question,
+            LocalDateTime createdAt,
+            String status,
+            List<AgentStep> steps
+    ) {
     }
 }

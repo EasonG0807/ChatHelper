@@ -1,0 +1,22 @@
+spring:
+  config:
+    activate:
+      on-profile: sentry-mcp
+  ai:
+    mcp:
+      client:
+        # Activating this profile enables MCP unless it is explicitly disabled.
+        enabled: ${MCP_ENABLED:true}
+        stdio:
+          connections:
+            sentry:
+              # Windows requires cmd /c to launch npx from ProcessBuilder.
+              command: ${SENTRY_MCP_COMMAND:cmd}
+              args:
+                - /c
+                - npx
+                - -y
+                # Pin the package so tool names and schemas do not change on restart.
+                - "@sentry/mcp-server@0.37.0"
+              env:
+                SENTRY_ACCESS_TOKEN: ${SENTRY_MCP_ACCESS_TOKEN:}

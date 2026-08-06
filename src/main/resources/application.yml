@@ -51,7 +51,7 @@ spring:
         enabled: ${MCP_ENABLED:false}
         name: rag-agent-mcp-client
         version: 1.0.0
-        request-timeout: 30s
+        request-timeout: ${MCP_REQUEST_TIMEOUT:60s}
         type: SYNC
         toolcallback:
           enabled: true
@@ -66,6 +66,16 @@ zhipu:
   #  chat-model: "glm-4.5-flash" 过期了！
   #  chat-model: "glm-4.6v-flash"
   chat-model: "glm-4.7-flash"
+
+# A blank DSN leaves Sentry event reporting inactive. SENTRY_DSN and the MCP
+# access token are different credentials: DSN sends events; the token reads
+# them through Sentry's API.
+sentry:
+  dsn: ${SENTRY_DSN:}
+  environment: ${SENTRY_ENVIRONMENT:local}
+  release: ${SENTRY_RELEASE:simple-demo@0.0.1}
+  traces-sample-rate: ${SENTRY_TRACES_SAMPLE_RATE:0.1}
+  send-default-pii: false
 
 agent:
   admin:

@@ -87,7 +87,8 @@
                 </div>
 
                 <div th:each="m : ${messages}">
-                    <div th:if="${m.role == 'user'}" class="msg user-msg">
+                    <div th:if="${m.role == 'user'}" class="msg user-msg"
+                         th:attr="data-message-id=${m.id}">
                         <div class="bubble user-bubble" th:text="${m.content}"></div>
                     </div>
                     <div th:if="${m.role == 'assistant'}" class="msg ai-msg">
@@ -173,57 +174,82 @@
                     <span><i data-kind="FINAL" aria-hidden="true"></i>输出</span>
                 </div>
                 <div id="agentStepList" class="agent-step-list">
-                    <div th:if="${#lists.isEmpty(steps)}" class="agent-chain-empty">
+                    <div th:if="${#lists.isEmpty(stepGroups)}" class="agent-chain-empty">
                         <span aria-hidden="true">⌁</span>
                         <strong>等待任务开始</strong>
                         <small>Agent 的规划和工具调用会实时显示在这里</small>
                     </div>
-                    <article th:each="step : ${steps}"
-                             class="agent-step"
-                             th:attr="data-step-id=${step.id},data-step-type=${step.stepType},data-status=${step.status}">
-                        <div class="agent-step-rail" aria-hidden="true">
-                            <span class="agent-step-node" th:text="${step.stepIndex}">1</span>
-                        </div>
-                        <div class="agent-step-card">
-                            <header class="agent-step-heading">
-                                <div class="agent-step-heading-main">
-                                    <span class="agent-step-icon" aria-hidden="true"></span>
-                                    <div>
-                                        <strong class="agent-step-name"
-                                                th:text="${step.stepType.name() == 'PLAN' ? '任务规划' : (step.stepType.name() == 'TOOL_CALL' ? '调用工具' : (step.stepType.name() == 'TOOL_RESULT' ? '工具结果' : (step.stepType.name() == 'FINAL' ? '生成回答' : '执行异常')))}">任务规划</strong>
-                                        <time th:if="${step.createdAt != null}"
-                                              th:datetime="${step.createdAt}"
-                                              th:text="${#temporals.format(step.createdAt, 'HH:mm:ss')}">10:32:18</time>
+                    <details th:each="group, groupStat : ${stepGroups}"
+                             th:classappend="${group.status == 'RUNNING'} ? ' is-live' : ''"
+                             class="agent-step-run"
+                             th:open="${groupStat.last}"
+                             th:attr="data-message-id=${group.messageId == null ? 'legacy' : group.messageId},data-status=${group.status}">
+                        <summary class="agent-step-run-summary">
+                            <span class="agent-step-run-index" th:text="${groupStat.count}">1</span>
+                            <span class="agent-step-run-main">
+                                <strong th:text="${group.question}">本轮用户提问</strong>
+                                <small>
+                                    <time th:if="${group.createdAt != null}"
+                                          th:datetime="${group.createdAt}"
+                                          th:text="${#temporals.format(group.createdAt, 'MM-dd HH:mm')}">07-30 10:40</time>
+                                    <span th:text="${#lists.size(group.steps) + ' 个步骤'}">4 个步骤</span>
+                                </small>
+                            </span>
+                            <span class="agent-step-run-side">
+                                <span class="agent-step-run-status"
+                                      th:text="${group.status == 'SUCCESS' ? '已完成' : (group.status == 'FAILED' ? '执行失败' : '进行中')}">已完成</span>
+                                <i aria-hidden="true">⌄</i>
+                            </span>
+                        </summary>
+                        <div class="agent-step-run-body">
+                            <article th:each="step, stepStat : ${group.steps}"
+                                     class="agent-step"
+                                     th:attr="data-step-id=${step.id},data-message-id=${step.messageId},data-step-type=${step.stepType},data-status=${step.status}">
+                                <div class="agent-step-rail" aria-hidden="true">
+                                    <span class="agent-step-node" th:text="${stepStat.count}">1</span>
+                                </div>
+                                <div class="agent-step-card">
+                                    <header class="agent-step-heading">
+                                        <div class="agent-step-heading-main">
+                                            <span class="agent-step-icon" aria-hidden="true"></span>
+                                            <div>
+                                                <strong class="agent-step-name"
+                                                        th:text="${step.stepType.name() == 'PLAN' ? '任务规划' : (step.stepType.name() == 'TOOL_CALL' ? '调用工具' : (step.stepType.name() == 'TOOL_RESULT' ? '工具结果' : (step.stepType.name() == 'FINAL' ? '生成回答' : '执行异常')))}">任务规划</strong>
+                                                <time th:if="${step.createdAt != null}"
+                                                      th:datetime="${step.createdAt}"
+                                                      th:text="${#temporals.format(step.createdAt, 'HH:mm:ss')}">10:32:18</time>
+                                            </div>
+                                        </div>
+                                        <span class="agent-step-status"
+                                              th:text="${step.status.name() == 'SUCCESS' ? '已完成' : (step.status.name() == 'RUNNING' ? '进行中' : '失败')}">已完成</span>
+                                    </header>
+
+                                    <div th:if="${step.toolName != null or step.latencyMs != null}" class="agent-step-meta">
+                                        <span th:if="${step.toolSource != null}" class="agent-step-source" th:text="${step.toolSource}">LOCAL</span>
+                                        <code th:if="${step.toolName != null}" th:text="${step.toolName}">rag_search</code>
+                                        <span th:if="${step.latencyMs != null}" class="agent-step-latency" th:text="${step.latencyMs + ' ms'}">120 ms</span>
                                     </div>
-                                </div>
-                                <span class="agent-step-status"
-                                      th:text="${step.status.name() == 'SUCCESS' ? '已完成' : (step.status.name() == 'RUNNING' ? '进行中' : '失败')}">已完成</span>
-                            </header>
 
-                            <div th:if="${step.toolName != null or step.latencyMs != null}" class="agent-step-meta">
-                                <span th:if="${step.toolSource != null}" class="agent-step-source" th:text="${step.toolSource}">LOCAL</span>
-                                <code th:if="${step.toolName != null}" th:text="${step.toolName}">rag_search</code>
-                                <span th:if="${step.latencyMs != null}" class="agent-step-latency" th:text="${step.latencyMs + ' ms'}">120 ms</span>
-                            </div>
-
-                            <details th:if="${step.toolArguments != null or step.toolResult != null or step.errorMessage != null}"
-                                     class="agent-step-details">
-                                <summary><span>查看执行详情</span><i aria-hidden="true">⌄</i></summary>
-                                <div class="agent-step-detail" th:if="${step.toolArguments != null}">
-                                    <label>输入参数</label>
-                                    <pre th:text="${step.toolArguments}"></pre>
+                                    <details th:if="${step.toolArguments != null or step.toolResult != null or step.errorMessage != null}"
+                                             class="agent-step-details">
+                                        <summary><span>查看执行详情</span><i aria-hidden="true">⌄</i></summary>
+                                        <div class="agent-step-detail" th:if="${step.toolArguments != null}">
+                                            <label>输入参数</label>
+                                            <pre th:text="${step.toolArguments}"></pre>
+                                        </div>
+                                        <div class="agent-step-detail" th:if="${step.toolResult != null}">
+                                            <label>执行结果</label>
+                                            <pre th:text="${step.toolResult}"></pre>
+                                        </div>
+                                        <div class="agent-step-detail is-error" th:if="${step.errorMessage != null}">
+                                            <label>错误信息</label>
+                                            <pre th:text="${step.errorMessage}"></pre>
+                                        </div>
+                                    </details>
                                 </div>
-                                <div class="agent-step-detail" th:if="${step.toolResult != null}">
-                                    <label>执行结果</label>
-                                    <pre th:text="${step.toolResult}"></pre>
-                                </div>
-                                <div class="agent-step-detail is-error" th:if="${step.errorMessage != null}">
-                                    <label>错误信息</label>
-                                    <pre th:text="${step.errorMessage}"></pre>
-                                </div>
-                            </details>
+                            </article>
                         </div>
-                    </article>
+                    </details>
                 </div>
             </section>
         </aside>
@@ -237,7 +263,9 @@
                 <h2 id="agentMemoryTitle">长期记忆管理</h2>
                 <p>查看并管理偏好、项目事实、决定和待办。只有“当前事实 + 已确认”的版本会进入后续对话。</p>
             </div>
-            <button type="button" class="agent-memory-close" onclick="closeMemoryManager()" aria-label="关闭">✕</button>
+            <button type="button" class="agent-memory-close" onclick="closeMemoryManager()" aria-label="关闭">
+                <span aria-hidden="true"></span>
+            </button>
         </header>
 
         <div class="agent-memory-toolbar">
@@ -271,7 +299,9 @@
                 <h2 id="agentMemoryEditTitle">编辑记忆</h2>
                 <p>事实内容变化时会创建新版本并保留旧版本，不会直接覆盖历史。</p>
             </div>
-            <button type="button" class="agent-memory-close" onclick="closeMemoryEditor()" aria-label="关闭">✕</button>
+            <button type="button" class="agent-memory-close" onclick="closeMemoryEditor()" aria-label="关闭">
+                <span aria-hidden="true"></span>
+            </button>
         </header>
 
         <input id="agentMemoryEditId" type="hidden">
@@ -328,6 +358,9 @@
     const deletedArtifactIds = new Set();
     let agentRunState = "IDLE";
     let liveAgentSteps = new Map();
+    const agentQuestionByMessageId = new Map();
+    let activeAgentQuestion = "";
+    let activeAgentUserMessage = null;
     let agentMemories = [];
     let editingMemory = null;
 
@@ -338,6 +371,8 @@
         hydrateArtifactLinks(document.getElementById("agentArtifactList"));
         bindArtifactListActions();
         bindSessionListActions();
+        hydrateAgentQuestionIndex();
+        refreshSteps();
         updateArtifactCount();
         scrollChatToBottom();
         document.getElementById("agentMemoryEditContent").addEventListener("input", updateMemoryContentCount);
@@ -580,11 +615,9 @@
             handlingDisconnect: false
         };
 
-        // The live panel shows only the current run; refreshSteps() restores
-        // the whole session history once the stream finishes.
-        const stepList = document.getElementById("agentStepList");
-        stepList.innerHTML = "";
-        liveAgentSteps.clear();
+        // Keep historical runs collapsed and append this question as a new,
+        // independently expandable call-chain group.
+        prepareLiveAgentStepRun(question, userDiv);
 
         eventSource.onmessage = function (event) {
             if (streamSequence !== agentStreamSequence) return;
@@ -991,10 +1024,142 @@
         }
     }
 
+    function hydrateAgentQuestionIndex() {
+        document.querySelectorAll(".user-msg[data-message-id]").forEach(message => {
+            const messageId = message.dataset.messageId;
+            const bubble = message.querySelector(".user-bubble");
+            if (messageId && bubble) {
+                agentQuestionByMessageId.set(messageId, (bubble.textContent || "").trim());
+            }
+        });
+    }
+
+    function questionForAgentMessage(messageId) {
+        const key = messageId == null ? "legacy" : String(messageId);
+        return agentQuestionByMessageId.get(key)
+            || (key === "legacy" ? "历史未关联调用" : `用户提问 #${key}`);
+    }
+
+    function prepareLiveAgentStepRun(question, userMessageElement) {
+        activeAgentQuestion = question || "本轮用户提问";
+        activeAgentUserMessage = userMessageElement || null;
+        liveAgentSteps.clear();
+        document.querySelectorAll("#agentStepList .agent-step-run").forEach(run => {
+            run.open = false;
+            run.classList.remove("is-live");
+        });
+    }
+
+    function agentStepRunStatusLabel(status) {
+        if (status === "SUCCESS") return "已完成";
+        if (status === "FAILED") return "执行失败";
+        return "进行中";
+    }
+
+    function formatAgentRunTime(value) {
+        const date = value == null ? new Date() : new Date(value);
+        if (Number.isNaN(date.getTime())) return "";
+        return new Intl.DateTimeFormat("zh-CN", {
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false
+        }).format(date);
+    }
+
+    function createAgentStepRunElement(messageId, question, status, createdAt, displayIndex, open) {
+        const run = document.createElement("details");
+        run.className = "agent-step-run";
+        run.dataset.messageId = messageId == null ? "legacy" : String(messageId);
+        run.dataset.status = status || "RUNNING";
+        run.classList.toggle("is-live", run.dataset.status === "RUNNING");
+        run.open = Boolean(open);
+
+        const summary = document.createElement("summary");
+        summary.className = "agent-step-run-summary";
+        const index = document.createElement("span");
+        index.className = "agent-step-run-index";
+        index.textContent = String(displayIndex || 1);
+
+        const main = document.createElement("span");
+        main.className = "agent-step-run-main";
+        const title = document.createElement("strong");
+        title.textContent = question || "本轮用户提问";
+        title.title = title.textContent;
+        const meta = document.createElement("small");
+        const time = document.createElement("time");
+        time.textContent = formatAgentRunTime(createdAt);
+        if (createdAt != null) time.dateTime = String(createdAt);
+        const count = document.createElement("span");
+        count.className = "agent-step-run-count";
+        count.textContent = "0 个步骤";
+        meta.append(time, count);
+        main.append(title, meta);
+
+        const side = document.createElement("span");
+        side.className = "agent-step-run-side";
+        const statusLabel = document.createElement("span");
+        statusLabel.className = "agent-step-run-status";
+        statusLabel.textContent = agentStepRunStatusLabel(run.dataset.status);
+        const chevron = document.createElement("i");
+        chevron.setAttribute("aria-hidden", "true");
+        chevron.textContent = "⌄";
+        side.append(statusLabel, chevron);
+        summary.append(index, main, side);
+
+        const body = document.createElement("div");
+        body.className = "agent-step-run-body";
+        run.append(summary, body);
+        return run;
+    }
+
+    function updateAgentStepRunSummary(run) {
+        const steps = Array.from(run.querySelectorAll(":scope > .agent-step-run-body > .agent-step"));
+        const hasCompletedFinal = steps.some(step =>
+            step.dataset.stepType === "FINAL" && step.dataset.status === "SUCCESS"
+        );
+        const latest = steps[steps.length - 1];
+        const failed = latest && (latest.dataset.stepType === "ERROR"
+            || latest.dataset.status === "FAILED" || latest.dataset.status === "ERROR");
+        const status = hasCompletedFinal ? "SUCCESS" : (failed ? "FAILED" : "RUNNING");
+        run.dataset.status = status;
+        run.classList.toggle("is-live", status === "RUNNING");
+        const count = run.querySelector(".agent-step-run-count");
+        const statusLabel = run.querySelector(".agent-step-run-status");
+        if (count) count.textContent = `${steps.length} 个步骤`;
+        if (statusLabel) statusLabel.textContent = agentStepRunStatusLabel(status);
+    }
+
+    function ensureLiveAgentStepRun(step) {
+        const list = document.getElementById("agentStepList");
+        const messageId = step.runId == null ? "live" : String(step.runId);
+        if (activeAgentUserMessage && messageId !== "live") {
+            activeAgentUserMessage.dataset.messageId = messageId;
+            agentQuestionByMessageId.set(messageId, activeAgentQuestion);
+        }
+
+        let run = Array.from(list.querySelectorAll(".agent-step-run"))
+            .find(item => item.dataset.messageId === messageId);
+        if (!run) {
+            list.querySelectorAll(".agent-chain-empty").forEach(item => item.remove());
+            const displayIndex = list.querySelectorAll(".agent-step-run").length + 1;
+            run = createAgentStepRunElement(messageId, activeAgentQuestion, "RUNNING",
+                step.timestamp || Date.now(), displayIndex, true);
+            list.appendChild(run);
+        }
+        list.querySelectorAll(".agent-step-run").forEach(item => {
+            if (item !== run) item.open = false;
+        });
+        run.open = true;
+        return run;
+    }
+
     function appendLiveStep(step) {
         const list = document.getElementById("agentStepList");
         if (!list || !step) return;
-        list.querySelectorAll(".agent-chain-empty").forEach(item => item.remove());
+        const run = ensureLiveAgentStepRun(step);
+        const runBody = run.querySelector(".agent-step-run-body");
 
         const stageId = step.stageId || `${step.phase || "STEP"}-${step.sequence || liveAgentSteps.size + 1}`;
         const previous = liveAgentSteps.get(stageId) || {
@@ -1008,6 +1173,7 @@
             stepType: phase === "PLANNING" ? "PLAN" : (phase === "TOOL_ERROR" ? "TOOL_RESULT" : phase),
             status: step.status || previous.status || "RUNNING",
             toolName: step.tool || previous.toolName || null,
+            messageId: step.runId || previous.messageId || null,
             liveStageId: stageId
         };
 
@@ -1025,11 +1191,12 @@
         if (latencyMatch) next.latencyMs = Number(latencyMatch[1]);
         liveAgentSteps.set(stageId, next);
 
-        const rendered = createAgentStepElement(next, true);
-        const existing = Array.from(list.querySelectorAll(".agent-step"))
+        const rendered = createAgentStepElement(next, true, next.stepIndex);
+        const existing = Array.from(runBody.querySelectorAll(".agent-step"))
             .find(item => item.dataset.liveStageId === stageId);
         if (existing) existing.replaceWith(rendered);
-        else list.appendChild(rendered);
+        else runBody.appendChild(rendered);
+        updateAgentStepRunSummary(run);
         list.scrollTop = list.scrollHeight;
     }
 
@@ -1347,25 +1514,66 @@
         }
     }
 
-    function refreshSteps() {
+    async function refreshSteps() {
         const sessionId = document.getElementById("agentSessionId").value;
-        fetch(`/agent/steps?sessionId=${sessionId}`)
-            .then(response => response.json())
-            .then(steps => {
-                const list = document.getElementById("agentStepList");
-                const fragment = document.createDocumentFragment();
-                liveAgentSteps.clear();
-                if (Array.isArray(steps) && steps.length > 0) {
-                    steps.forEach(step => fragment.appendChild(renderStep(step)));
-                } else {
-                    fragment.appendChild(renderAgentChainEmpty());
-                }
-                list.replaceChildren(fragment);
+        try {
+            const response = await fetch(`/agent/steps?sessionId=${encodeURIComponent(sessionId)}`, {
+                headers: { "Accept": "application/json" }
             });
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                return;
+            }
+            if (!response.ok) throw new Error("调用链加载失败");
+            const steps = await response.json();
+            if (!Array.isArray(steps)) throw new Error("调用链格式错误");
+            liveAgentSteps.clear();
+            renderAgentStepGroups(steps);
+        } catch (error) {
+            // Keep the server-rendered call chain when the refresh request
+            // fails, instead of replacing valid history with an empty state.
+            console.warn("Agent call chain refresh failed:", error);
+        }
     }
 
-    function renderStep(step) {
-        return createAgentStepElement(step, false);
+    function renderAgentStepGroups(steps) {
+        const list = document.getElementById("agentStepList");
+        const fragment = document.createDocumentFragment();
+        if (steps.length === 0) {
+            fragment.appendChild(renderAgentChainEmpty());
+            list.replaceChildren(fragment);
+            return;
+        }
+
+        const grouped = new Map();
+        steps.forEach(step => {
+            const key = step.messageId == null ? "legacy" : String(step.messageId);
+            if (!grouped.has(key)) grouped.set(key, []);
+            grouped.get(key).push(step);
+        });
+
+        const runs = Array.from(grouped.entries());
+        runs.forEach(([messageId, runSteps], runIndex) => {
+            const completed = runSteps.some(step => step.stepType === "FINAL" && step.status === "SUCCESS");
+            const failed = runSteps.some(step => step.stepType === "ERROR" || step.status === "FAILED");
+            const status = completed ? "SUCCESS" : (failed ? "FAILED" : "RUNNING");
+            const run = createAgentStepRunElement(
+                messageId,
+                questionForAgentMessage(messageId),
+                status,
+                runSteps[0] && runSteps[0].createdAt,
+                runIndex + 1,
+                runIndex === runs.length - 1
+            );
+            const body = run.querySelector(".agent-step-run-body");
+            runSteps.forEach((step, stepIndex) => {
+                body.appendChild(createAgentStepElement(step, false, stepIndex + 1));
+            });
+            const count = run.querySelector(".agent-step-run-count");
+            if (count) count.textContent = `${runSteps.length} 个步骤`;
+            fragment.appendChild(run);
+        });
+        list.replaceChildren(fragment);
     }
 
     function agentStepPresentation(stepType) {
@@ -1410,13 +1618,14 @@
         root.appendChild(detail);
     }
 
-    function createAgentStepElement(step, live) {
+    function createAgentStepElement(step, live, displayIndex) {
         const presentation = agentStepPresentation(step.stepType);
         const item = document.createElement("article");
         item.className = live ? "agent-step agent-step-live" : "agent-step";
         item.dataset.stepType = presentation.kind;
         item.dataset.status = String(step.status || "RUNNING");
         if (step.id != null) item.dataset.stepId = String(step.id);
+        if (step.messageId != null) item.dataset.messageId = String(step.messageId);
         if (live && step.liveStageId) item.dataset.liveStageId = step.liveStageId;
 
         const rail = document.createElement("div");
@@ -1424,7 +1633,7 @@
         rail.setAttribute("aria-hidden", "true");
         const node = document.createElement("span");
         node.className = "agent-step-node";
-        node.textContent = String(step.stepIndex || 1);
+        node.textContent = String(displayIndex || step.stepIndex || 1);
         rail.appendChild(node);
 
         const card = document.createElement("div");
