@@ -80,6 +80,24 @@ sentry:
 agent:
   admin:
     user-ids: ${AGENT_ADMIN_USER_IDS:1}
+  mcp:
+    credentials:
+      # Keep business code behind McpCredentialVault. A future Vault implementation
+      # can be selected here without changing MCP connection services.
+      backend: ${MCP_CREDENTIAL_BACKEND:database}
+      # The key itself must stay outside source control. Configure
+      # MCP_CREDENTIAL_KEY_V1 as Base64-encoded 32 random bytes.
+      active-key-id: ${MCP_CREDENTIAL_ACTIVE_KEY_ID:v1}
+      keys:
+        v1: ${MCP_CREDENTIAL_KEY_V1:}
+    user:
+      max-connections: ${MCP_USER_MAX_CONNECTIONS:10}
+    remote:
+      request-timeout: ${MCP_USER_REQUEST_TIMEOUT:60s}
+      initialization-timeout: ${MCP_USER_INITIALIZATION_TIMEOUT:30s}
+      # Secure defaults. Enable these only for trusted local development MCP servers.
+      allow-private-networks: ${MCP_ALLOW_PRIVATE_NETWORKS:false}
+      allow-insecure-http: ${MCP_ALLOW_INSECURE_HTTP:false}
   history:
     summary-max-chars: ${AGENT_HISTORY_SUMMARY_MAX_CHARS:3000}
     # Only summarize after enough historical context accumulates.

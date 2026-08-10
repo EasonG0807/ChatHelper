@@ -132,7 +132,7 @@ public class ReActAgentExecutor {
 
         for (int step = 1; step <= maxSteps && !sink.isCancelled(); step++) {
             emitStep(sink, run, step, "PLANNING", null, "RUNNING", "第 " + step + " 步规划中…");
-            ReActAction action = nextAction(question, history, observations, step, skillCatalog);
+            ReActAction action = nextAction(userId, question, history, observations, step, skillCatalog);
             String plan = blankToDefault(action.plan(), "Decide the next action.");
             stepService.recordPlan(sessionId, messageId, "Step " + step + ": " + plan);
             emitStep(sink, run, step, "PLAN", null, "SUCCESS", plan);
@@ -151,9 +151,9 @@ public class ReActAgentExecutor {
                 return;
             }
 
-            ReactTool tool = toolRegistry.find(action.toolName()).orElse(null);
+            ReactTool tool = toolRegistry.find(userId, action.toolName()).orElse(null);
             if (tool == null) {
-                String observation = "Unknown or disabled tool: " + action.toolName() + ". Available tools: " + toolRegistry.list().stream()
+                String observation = "Unknown or disabled tool: " + action.toolName() + ". Available tools: " + toolRegistry.list(userId).stream()
                         .map(ReactTool::name)
                         .toList();
                 stepService.recordToolError(sessionId, messageId, action.toolName(), AgentToolSource.LOCAL,
@@ -490,13 +490,14 @@ public class ReActAgentExecutor {
         };
     }
 
-    private ReActAction nextAction(String question,
+    private ReActAction nextAction(Long userId,
+                                   String question,
                                    List<Message> history,
                                    List<String> observations,
                                    int step,
                                    String skillCatalog) {
         List<Message> messages = new ArrayList<>();
-        messages.add(new SystemMessage(systemPrompt(skillCatalog)));
+        messages.add(new SystemMessage(systemPrompt(userId, skillCatalog)));
         if (history != null) {
             messages.addAll(history);
         }
@@ -507,7 +508,7 @@ public class ReActAgentExecutor {
             return ReActAction.parseRequired(raw, objectMapper);
         } catch (IllegalArgumentException firstError) {
             try {
-                String repaired = repairActionJson(raw, firstError.getMessage());
+                String repaired = repairActionJson(userId, raw, firstError.getMessage());
                 return ReActAction.parseRequired(repaired, objectMapper);
             } catch (RuntimeException repairError) {
                 return new ReActAction("finish",
@@ -517,7 +518,7 @@ public class ReActAgentExecutor {
         }
     }
 
-    private String systemPrompt(String skillCatalog) {
+    private String systemPrompt(Long userId, String skillCatalog) {
         return """
                 You are a ReAct-style AI agent in this Java Spring system.
                 You are also the router: for plain conversation, greetings, general knowledge, translation,
@@ -575,7 +576,7 @@ public class ReActAgentExecutor {
 
                 Available tools:
                 %s
-                """.formatted(skillCatalog, toolRegistry.toolDescriptions());
+                """.formatted(skillCatalog, toolRegistry.toolDescriptions(userId));
     }
 
     private String userPrompt(String question, List<String> observations, int step) {
@@ -637,7 +638,7 @@ public class ReActAgentExecutor {
         }
     }
 
-    private String repairActionJson(String rawText, String parseError) {
+    private String repairActionJson(Long userId, String rawText, String parseError) {
         List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage("""
                 You repair malformed ReAct planner output.
@@ -652,7 +653,7 @@ public class ReActAgentExecutor {
 
                 Available tools:
                 %s
-                """.formatted(toolRegistry.toolDescriptions())));
+                """.formatted(toolRegistry.toolDescriptions(userId))));
         messages.add(new UserMessage("""
                 Parse error:
                 %s

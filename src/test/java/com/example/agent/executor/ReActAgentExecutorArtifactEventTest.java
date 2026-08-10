@@ -125,7 +125,7 @@ class ReActAgentExecutorArtifactEventTest {
         ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
 
         when(skillLibraryService.catalog(1L)).thenReturn("");
-        when(toolRegistry.toolDescriptions()).thenReturn("");
+        when(toolRegistry.toolDescriptions(1L)).thenReturn("");
         when(chatModel.call(any(Prompt.class))).thenReturn(response(
                 "{\"type\":\"finish\",\"plan\":\"直接回答用户\"}"));
         when(chatModel.stream(any(Prompt.class))).thenReturn(Flux.just(

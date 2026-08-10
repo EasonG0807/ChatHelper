@@ -32,7 +32,8 @@ public class ToolListReactTool implements ReactTool {
 
     @Override
     public ToolExecutionResult execute(ToolExecutionContext context, Map<String, Object> arguments) {
-        String content = toolRegistry.list().stream()
+        Long userId = context == null ? null : context.userId();
+        String content = toolRegistry.list(userId).stream()
                 .filter(tool -> !"terminate".equals(tool.name()))
                 .map(tool -> "- `" + tool.name() + "`: " + tool.description())
                 .collect(Collectors.joining("\n"));

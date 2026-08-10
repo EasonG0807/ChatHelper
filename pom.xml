@@ -19,7 +19,7 @@ Project metadata, dependencies and build configuration.
 
     <properties>
         <java.version>17</java.version>
-        <spring-ai.version>1.0.3</spring-ai.version>
+        <spring-ai.version>1.0.9</spring-ai.version>
         <sentry.version>8.50.1</sentry.version>
         <victools-jsonschema.version>4.37.0</victools-jsonschema.version>
     </properties>

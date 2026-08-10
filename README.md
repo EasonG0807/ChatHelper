@@ -254,7 +254,7 @@ com.example.demo.DemoApplication
 | `/agent/doc` | 文档 Agent |
 | `/agent` | 通用 ReAct Agent 工作台 |
 | `/agent/skills` | Agent 技能管理 |
-| `/agent/admin` | 本地工具与 MCP 工具管理，仅管理员用户可访问 |
+| `/agent/admin` | 工具中心；所有登录用户可连接和管理自己的远程 MCP，管理员还可控制系统共享工具 |
 
 管理员用户 ID 默认配置为 `1`，可通过环境变量修改：
 
@@ -337,9 +337,35 @@ node -v
 cmd /c npx -v
 ```
 
-项目通过 `npx` 启动固定版本的 `@sentry/mcp-server`。修改 MCP 配置后必须完整重启 Spring Boot，工具注册表只在应用启动时发现工具。重启后登录管理员账号，在 `/agent/admin` 中即可看到来源为 `MCP` 的工具。
+项目通过 `npx` 启动固定版本的 `@sentry/mcp-server`。这是服务器侧共享的 STDIO MCP，修改配置后仍需完整重启 Spring Boot。重启后在 `/agent/admin` 中可看到来源为 `MCP` 的共享工具。
 
 不要将 DSN、模型 API Key 或 Personal Token 写入 `application.yml` 或提交到 Git。
+
+### 用户私有 MCP 连接
+
+每个登录用户都可以在 `/agent/admin` 添加自己的远程 MCP。系统自动检测 Streamable HTTP（`/mcp`）与旧版 SSE（`/sse`），连接成功后记录实际采用的协议。Bearer Token 使用 AES-256-GCM 加密后存入 PostgreSQL；主密钥只存在于后端启动环境，Token 不会进入 Agent Prompt 或工具参数。
+
+首次使用前，由部署者生成并配置一份系统主密钥：
+
+```powershell
+$bytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)
+
+$env:MCP_CREDENTIAL_ACTIVE_KEY_ID="v1"
+$env:MCP_CREDENTIAL_KEY_V1="上一步生成的Base64字符串"
+```
+
+完全重启 Spring Boot 后，工具中心会显示“Token 加密已就绪”。普通用户只填写自己的 MCP 地址和 Token，看不到系统主密钥，也看不到已经保存的 Token。
+
+生产环境默认只允许公网 HTTPS 地址。连接受信任的本地开发 MCP 时，可临时增加：
+
+```powershell
+$env:MCP_ALLOW_PRIVATE_NETWORKS="true"
+$env:MCP_ALLOW_INSECURE_HTTP="true"
+```
+
+不要在生产环境开启这两个选项。完整说明见 [用户 MCP 连接与凭据配置](docs/user-mcp-connections.md)。
 
 ## Agent 上下文与记忆
 
@@ -397,7 +423,7 @@ RAG 查询中的 BM25 会降级为向量召回，但为了完整复现混合检�
 $env:AGENT_REACT_PDF_FONT_PATH="C:/Windows/Fonts/simhei.ttf"
 ```
 
-### MCP 工具没有出现在管理页
+### 服务器侧共享 MCP 工具没有出现在管理页
 
 确认 Profile、Token、Node.js 和 `npx` 均已配置，然后完整重启应用。只刷新浏览器不会重新发现 MCP 工具。
 
@@ -405,5 +431,6 @@ $env:AGENT_REACT_PDF_FONT_PATH="C:/Windows/Fonts/simhei.ttf"
 
 - 项目当前适合本地学习、演示和受信任环境，不应直接作为公网生产系统部署。
 - 所有模型 Key、OCR 凭据、Sentry Token 和数据库密码都应通过环境变量或外部密钥系统注入。
+- 用户 MCP Token 使用独立随机 nonce 的 AES-256-GCM 加密；数据库不保存主密钥，页面和接口不回显 Token。
 - 私有文档检索在工具执行前校验文档归属，缓存 Key 也包含用户 ID，避免跨用户复用证据。
 - 网页抓取和资源下载工具包含 URL 与工作目录边界校验，但公开部署前仍应增加请求限流、细粒度权限和审计策略。

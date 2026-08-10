@@ -57,8 +57,8 @@ class ReActAgentExecutorDuplicateArtifactTest {
                 """;
 
         when(skillLibraryService.catalog(1L)).thenReturn("");
-        when(toolRegistry.toolDescriptions()).thenReturn("");
-        when(toolRegistry.find("pdf_generation")).thenReturn(Optional.of(pdfTool));
+        when(toolRegistry.toolDescriptions(1L)).thenReturn("");
+        when(toolRegistry.find(1L, "pdf_generation")).thenReturn(Optional.of(pdfTool));
         when(pdfTool.name()).thenReturn("pdf_generation");
         when(pdfTool.source()).thenReturn(AgentToolSource.LOCAL);
         when(pdfTool.execute(any(), anyMap())).thenReturn(

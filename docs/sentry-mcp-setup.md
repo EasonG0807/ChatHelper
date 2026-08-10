@@ -106,4 +106,4 @@ ANTHROPIC_API_KEY=<Anthropic API Key>
 
 ## 7. 安全边界
 
-当前 STDIO MCP 使用服务端共享 Token，启用后的 Sentry 工具可能被所有能够使用 Agent 的登录用户调用。现阶段仅用于本地演示或受信任用户；公开部署前应增加 Sentry 工具的管理员白名单，或者改为按用户授权的 Remote MCP OAuth。
+当前 STDIO MCP 使用服务端共享 Token，启用后的 Sentry 工具可能被所有能够使用 Agent 的登录用户调用。现阶段仅用于本地演示或受信任用户。需要用户隔离时，应在工具中心为每个用户配置其自己的远程 MCP Endpoint；页面会自动检测 Streamable HTTP 与旧版 SSE。支持标准 OAuth 的远程 MCP 仍建议后续增加完整 OAuth 授权流程。

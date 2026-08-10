@@ -15,6 +15,8 @@ import com.example.agent.service.AgentStepService;
 import com.example.agent.service.AgentToolManagementService;
 import com.example.agent.executor.ReActAgentExecutor;
 import com.example.agent.service.SkillLibraryService;
+import com.example.agent.service.mcp.McpConnectionService;
+import com.example.agent.service.mcp.McpCsrfTokenService;
 import com.example.agent.tool.AgentToolRegistry;
 import com.example.agent.tool.react.AgentWorkspaceService;
 import com.example.demo.service.ImageQuestionContext;
@@ -60,6 +62,8 @@ public class AgentController {
     private final SkillLibraryService skillLibraryService;
     private final AgentToolManagementService toolManagementService;
     private final AgentWorkspaceService workspaceService;
+    private final McpConnectionService mcpConnectionService;
+    private final McpCsrfTokenService mcpCsrfTokenService;
 
     @Value("${agent.admin.user-ids:1}")
     private String adminUserIds;
@@ -181,9 +185,7 @@ public class AgentController {
         if (userId == null) {
             return "redirect:/auth/login";
         }
-        if (!isAdmin(userId)) {
-            return "redirect:/agent";
-        }
+        boolean admin = isAdmin(userId);
         List<AgentToolConfig> tools = toolManagementService.listTools();
         List<AgentToolConfig> localTools = tools.stream()
                 .filter(tool -> tool.getToolSource() == AgentToolSource.LOCAL)
@@ -194,17 +196,31 @@ public class AgentController {
         List<AgentToolConfig> systemTools = tools.stream()
                 .filter(tool -> tool.getToolSource() == AgentToolSource.SYSTEM)
                 .toList();
+        List<McpConnectionService.ConnectionView> userConnections = mcpConnectionService.list(userId);
+        long privateMcpToolCount = userConnections.stream().mapToLong(view -> view.tools().size()).sum();
+        long enabledPrivateMcpToolCount = userConnections.stream()
+                .flatMap(view -> view.tools().stream())
+                .filter(tool -> Boolean.TRUE.equals(tool.getEnabled()))
+                .count();
         model.addAttribute("tools", tools);
         model.addAttribute("localTools", localTools);
         model.addAttribute("mcpTools", mcpTools);
         model.addAttribute("systemTools", systemTools);
-        model.addAttribute("toolCount", tools.size());
+        model.addAttribute("toolCount", tools.size() + privateMcpToolCount);
         model.addAttribute("localToolCount", localTools.size());
-        model.addAttribute("mcpToolCount", mcpTools.size());
+        model.addAttribute("mcpToolCount", mcpTools.size() + privateMcpToolCount);
         model.addAttribute("systemToolCount", systemTools.size());
         model.addAttribute("enabledToolCount", tools.stream()
                 .filter(tool -> Boolean.TRUE.equals(tool.getEnabled()))
-                .count());
+                .count() + enabledPrivateMcpToolCount);
+        model.addAttribute("isAdmin", admin);
+        model.addAttribute("mcpConnections", userConnections);
+        model.addAttribute("privateMcpToolCount", privateMcpToolCount);
+        model.addAttribute("credentialVaultConfigured", mcpConnectionService.credentialVaultConfigured());
+        model.addAttribute("credentialVaultBackend", mcpConnectionService.credentialVaultBackend());
+        model.addAttribute("allowPrivateNetworks", mcpConnectionService.allowPrivateNetworks());
+        model.addAttribute("allowInsecureHttp", mcpConnectionService.allowInsecureHttp());
+        model.addAttribute("mcpCsrfToken", mcpCsrfTokenService.token(httpSession));
         return "agent-admin";
     }
 

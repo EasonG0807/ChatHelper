@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>工具管理 · Agent 管理台</title>
+    <title>工具管理 · Agent</title>
     <link rel="stylesheet" href="/premium.css">
     <link rel="stylesheet" href="/agent-admin.css">
 </head>
@@ -18,86 +18,208 @@
 <div class="agent-admin-shell agent-tool-page">
     <header class="agent-admin-header agent-tool-hero">
         <div class="agent-tool-hero-copy">
-            <p class="eyebrow">Agent Operations</p>
-            <h1>工具管理</h1>
-            <p>集中查看本地能力与 MCP 扩展，按来源筛选并控制 Agent 可调用的工具。</p>
+            <p class="eyebrow">Personal Tool Center</p>
+            <h1>工具与 MCP 连接</h1>
+            <p>系统工具由平台统一提供；你连接的远程 MCP 和发现的工具只对自己的 Agent 可见。</p>
         </div>
         <div class="agent-admin-actions">
             <a class="btn btn-secondary" href="/agent">返回 Agent</a>
             <a class="btn btn-secondary" href="/agent/skills">技能库</a>
-            <a class="btn agent-refresh-btn" href="/agent/admin" aria-label="重新发现工具">
-                <span aria-hidden="true">↻</span>
-                刷新发现
+            <button id="openCredentialGuide" class="btn btn-secondary" type="button">凭据配置指南</button>
+            <a class="btn agent-refresh-btn" href="/agent/admin" aria-label="刷新工具页面">
+                <span aria-hidden="true">↻</span>刷新
             </a>
         </div>
     </header>
 
+    <div class="agent-mcp-flash is-success" th:if="${mcpMessage}" th:text="${mcpMessage}"></div>
+    <div class="agent-mcp-flash is-error" th:if="${mcpError}" th:text="${mcpError}"></div>
+
     <section class="agent-admin-metrics agent-tool-metrics" aria-label="工具统计">
         <div class="agent-admin-metric agent-tool-metric metric-total">
-            <span>全部工具</span>
-            <strong th:text="${toolCount}">0</strong>
-            <small>当前已注册能力</small>
+            <span>全部工具</span><strong th:text="${toolCount}">0</strong><small>当前用户可见能力</small>
         </div>
         <div class="agent-admin-metric agent-tool-metric metric-local">
-            <span>本地工具</span>
-            <strong th:text="${localToolCount}">0</strong>
-            <small>应用内置业务能力</small>
+            <span>系统/本地</span><strong th:text="${localToolCount + systemToolCount}">0</strong><small>平台统一提供</small>
         </div>
         <div class="agent-admin-metric agent-tool-metric metric-mcp">
-            <span>MCP 工具</span>
-            <strong th:text="${mcpToolCount}">0</strong>
-            <small>外部服务扩展能力</small>
+            <span>MCP 工具</span><strong th:text="${mcpToolCount}">0</strong><small>共享及用户私有扩展</small>
         </div>
         <div class="agent-admin-metric agent-tool-metric metric-enabled">
-            <span>已启用</span>
-            <strong th:text="${enabledToolCount}">0</strong>
-            <small>可被 Agent 调用</small>
+            <span>已启用</span><strong th:text="${enabledToolCount}">0</strong><small>可被 Agent 调用</small>
         </div>
     </section>
 
     <main class="agent-tool-console">
+        <section class="agent-admin-panel mcp-connect-panel">
+            <div class="agent-tool-panel-head">
+                <div>
+                    <p class="eyebrow">Remote MCP</p>
+                    <h2>连接我的 MCP Server</h2>
+                    <p>自动检测 Streamable HTTP 与旧版 SSE。Token 在后端加密保存，不会进入提示词或工具调用参数。</p>
+                </div>
+                <span th:class="${credentialVaultConfigured} ? 'mcp-vault-state is-ready' : 'mcp-vault-state is-missing'">
+                    <i aria-hidden="true"></i>
+                    <span th:text="${credentialVaultConfigured} ? 'Token 加密已就绪' : 'Token 加密未配置'">Token 加密已就绪</span>
+                </span>
+            </div>
+
+            <div class="mcp-security-note">
+                <strong>安全策略</strong>
+                <span>生产环境仅允许 HTTPS 公网地址；STDIO 命令不会开放给普通用户。</span>
+                <small th:if="${allowPrivateNetworks or allowInsecureHttp}">
+                    当前已开启本地开发放行：
+                    <span th:if="${allowPrivateNetworks}">允许内网</span>
+                    <span th:if="${allowInsecureHttp}">允许 HTTP</span>
+                </small>
+            </div>
+
+            <form id="mcpConnectionForm" class="mcp-connect-form" action="/agent/mcp/connections" method="post"
+                  th:attr="data-vault-configured=${credentialVaultConfigured}">
+                <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                <label>
+                    <span>连接名称</span>
+                    <input name="name" maxlength="64" required placeholder="例如：我的 Sentry">
+                </label>
+                <label class="mcp-url-field">
+                    <span>MCP Endpoint URL</span>
+                    <input name="serverUrl" type="url" maxlength="1024" required
+                           placeholder="例如：https://mcp.api.coingecko.com/mcp" autocomplete="url" spellcheck="false">
+                </label>
+                <label>
+                    <span>认证方式</span>
+                    <select id="mcpAuthType" name="authType">
+                        <option value="NONE">无需认证</option>
+                        <option value="BEARER_TOKEN">Bearer Token</option>
+                    </select>
+                </label>
+                <label id="mcpBearerField" class="mcp-token-field" hidden>
+                    <span>Token</span>
+                    <input id="mcpBearerToken" name="bearerToken" type="password" maxlength="16000"
+                           placeholder="只会提交给后端加密保存" autocomplete="new-password" spellcheck="false">
+                </label>
+                <button class="btn mcp-connect-submit" type="submit">连接并发现工具</button>
+                <small class="mcp-url-help">直接填写服务商提供的 /mcp 或 /sse 地址，系统会自动选择协议。</small>
+            </form>
+        </section>
+
+        <section class="agent-admin-panel mcp-connections-panel">
+            <div class="agent-tool-panel-head">
+                <div>
+                    <p class="eyebrow">My Connections</p>
+                    <h2>我的 MCP 连接</h2>
+                    <p>连接、凭据和工具启停均按当前登录用户隔离。</p>
+                </div>
+                <div class="agent-tool-visible-count">共 <strong th:text="${#lists.size(mcpConnections)}">0</strong> 个连接</div>
+            </div>
+
+            <div class="mcp-connection-grid" th:if="${!#lists.isEmpty(mcpConnections)}">
+                <article class="mcp-connection-card" th:each="view : ${mcpConnections}">
+                    <div class="mcp-connection-head">
+                        <div>
+                            <h3 th:text="${view.connection.name}">我的 MCP</h3>
+                            <code th:text="${view.connection.serverUrl}" th:title="${view.connection.serverUrl}">https://example/sse</code>
+                        </div>
+                        <span th:classappend="${' status-' + #strings.toLowerCase(view.connection.status.name())}"
+                              class="mcp-connection-status" th:text="${view.connection.status}">CONNECTED</span>
+                    </div>
+
+                    <div class="mcp-connection-meta">
+                        <span th:text="${view.connection.authType.name() == 'BEARER_TOKEN' ? 'Bearer Token' : '无需认证'}">无需认证</span>
+                        <span th:if="${view.connection.transportType != null}"
+                              th:text="${view.connection.transportType.name() == 'STREAMABLE_HTTP' ? 'Streamable HTTP' : 'SSE'}">Streamable HTTP</span>
+                        <span th:if="${view.connection.transportType == null}">协议自动检测</span>
+                        <span th:text="${#lists.size(view.tools) + ' 个工具'}">0 个工具</span>
+                        <span th:if="${view.connection.lastConnectedAt != null}"
+                              th:text="${#temporals.format(view.connection.lastConnectedAt, 'MM-dd HH:mm')}">08-10 12:00</span>
+                    </div>
+
+                    <p class="mcp-connection-error" th:if="${view.connection.lastError}" th:text="${view.connection.lastError}"></p>
+
+                    <div class="mcp-connection-actions">
+                        <form action="#" th:action="@{/agent/mcp/connections/{id}/reconnect(id=${view.connection.id})}" method="post">
+                            <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                            <button class="btn btn-secondary btn-sm" type="submit">测试并刷新</button>
+                        </form>
+                        <form action="#" th:action="@{/agent/mcp/connections/{id}/enabled(id=${view.connection.id})}" method="post">
+                            <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                            <input type="hidden" name="enabled" th:value="${!view.connection.enabled}">
+                            <button class="btn btn-secondary btn-sm" type="submit"
+                                    th:text="${view.connection.enabled ? '停用连接' : '启用连接'}">停用连接</button>
+                        </form>
+                        <details class="mcp-token-replace" th:if="${view.connection.authType.name() == 'BEARER_TOKEN'}">
+                            <summary>替换 Token</summary>
+                            <form action="#" th:action="@{/agent/mcp/connections/{id}/credential(id=${view.connection.id})}" method="post">
+                                <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                                <input name="bearerToken" type="password" maxlength="16000" required
+                                       placeholder="输入新 Token" autocomplete="new-password" spellcheck="false">
+                                <button class="btn btn-sm" type="submit">保存并重连</button>
+                            </form>
+                        </details>
+                        <form class="mcp-delete-form" action="#" th:action="@{/agent/mcp/connections/{id}/delete(id=${view.connection.id})}" method="post">
+                            <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                            <button class="btn btn-danger btn-sm" type="submit">删除</button>
+                        </form>
+                    </div>
+
+                    <div class="mcp-private-tools" data-tool-group="MCP" th:if="${!#lists.isEmpty(view.tools)}">
+                        <div class="mcp-private-tools-head">
+                            <strong>发现的工具</strong>
+                            <span><span th:text="${#lists.size(view.tools)}">0</span> 个</span>
+                        </div>
+                        <div class="mcp-private-tool" th:each="tool : ${view.tools}"
+                             th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
+                             data-tool-card data-source="MCP"
+                             th:attr="data-status=${tool.enabled ? 'ENABLED' : 'DISABLED'},data-search-text=${tool.exposedName + ' ' + (tool.description == null ? '' : tool.description)}">
+                            <div>
+                                <code th:text="${tool.exposedName}" th:title="${tool.exposedName}">mcp_tool</code>
+                                <p th:text="${#strings.isEmpty(tool.description) ? '暂无工具说明' : tool.description}">工具说明</p>
+                            </div>
+                            <form class="agent-tool-toggle-form" action="#"
+                                  th:action="@{/agent/mcp/tools/{id}/enabled(id=${tool.id})}" method="post">
+                                <input type="hidden" name="csrfToken" th:value="${mcpCsrfToken}">
+                                <input type="hidden" name="enabled" th:value="${!tool.enabled}">
+                                <button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'"
+                                        type="submit" th:attr="aria-pressed=${tool.enabled}"><span aria-hidden="true"></span></button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="mcp-no-tools" th:if="${#lists.isEmpty(view.tools)}">尚未发现工具，请检查连接后重新刷新。</div>
+                </article>
+            </div>
+
+            <div class="agent-admin-empty mcp-connections-empty" th:if="${#lists.isEmpty(mcpConnections)}">
+                <span class="agent-tool-empty-icon" aria-hidden="true">M</span>
+                <strong>还没有个人 MCP 连接</strong>
+                <span>在上方填写远程 /mcp 或 /sse 地址，连接成功后工具会自动出现在 Agent 中。</span>
+            </div>
+        </section>
+
         <section class="agent-admin-panel agent-tool-panel">
             <div class="agent-tool-panel-head">
                 <div>
-                    <p class="eyebrow">Tool Registry</p>
-                    <h2>已发现工具</h2>
-                    <p>工具按来源分组展示，停用后 Agent 将不会再调用该工具。</p>
+                    <p class="eyebrow">Shared Tool Registry</p>
+                    <h2>系统共享工具</h2>
+                    <p th:text="${isAdmin ? '管理员可控制全局启停；该状态会影响所有用户。' : '由系统管理员统一维护，当前用户可以直接使用已启用工具。'}">共享工具</p>
                 </div>
-                <div class="agent-tool-visible-count" aria-live="polite">
-                    当前显示 <strong id="visibleToolCount" th:text="${toolCount}">0</strong> 个
-                </div>
+                <div class="agent-tool-visible-count" aria-live="polite">当前显示 <strong id="visibleToolCount" th:text="${toolCount}">0</strong> 个</div>
             </div>
 
-            <div class="agent-tool-toolbar" th:if="${!#lists.isEmpty(tools)}">
+            <div class="agent-tool-toolbar" th:if="${toolCount > 0}">
                 <label class="agent-tool-search" for="toolSearch">
                     <span class="agent-tool-search-icon" aria-hidden="true"></span>
-                    <input id="toolSearch" type="search" autocomplete="off"
-                           placeholder="搜索工具名称或描述" aria-label="搜索工具名称或描述">
+                    <input id="toolSearch" type="search" autocomplete="off" placeholder="搜索工具名称或描述" aria-label="搜索工具名称或描述">
                     <button id="clearToolSearch" type="button" aria-label="清空搜索" hidden>×</button>
                 </label>
-
                 <div class="agent-tool-source-filters" role="group" aria-label="按工具来源筛选">
-                    <button class="agent-tool-filter is-active" type="button" data-source-filter="ALL" aria-pressed="true">
-                        全部 <span th:text="${toolCount}">0</span>
-                    </button>
-                    <button class="agent-tool-filter" type="button" data-source-filter="LOCAL" aria-pressed="false">
-                        本地 <span th:text="${localToolCount}">0</span>
-                    </button>
-                    <button class="agent-tool-filter" type="button" data-source-filter="MCP" aria-pressed="false">
-                        MCP <span th:text="${mcpToolCount}">0</span>
-                    </button>
-                    <button class="agent-tool-filter" type="button" data-source-filter="SYSTEM" aria-pressed="false"
-                            th:if="${systemToolCount > 0}">
-                        系统 <span th:text="${systemToolCount}">0</span>
-                    </button>
+                    <button class="agent-tool-filter is-active" type="button" data-source-filter="ALL" aria-pressed="true">全部 <span th:text="${toolCount}">0</span></button>
+                    <button class="agent-tool-filter" type="button" data-source-filter="LOCAL" aria-pressed="false">本地 <span th:text="${localToolCount}">0</span></button>
+                    <button class="agent-tool-filter" type="button" data-source-filter="MCP" aria-pressed="false">MCP <span th:text="${mcpToolCount}">0</span></button>
+                    <button class="agent-tool-filter" type="button" data-source-filter="SYSTEM" aria-pressed="false" th:if="${systemToolCount > 0}">系统 <span th:text="${systemToolCount}">0</span></button>
                 </div>
-
-                <label class="agent-tool-status-filter">
-                    <span>状态</span>
+                <label class="agent-tool-status-filter"><span>状态</span>
                     <select id="toolStatusFilter" aria-label="按启用状态筛选">
-                        <option value="ALL">全部状态</option>
-                        <option value="ENABLED">仅看启用</option>
-                        <option value="DISABLED">仅看停用</option>
+                        <option value="ALL">全部状态</option><option value="ENABLED">仅看启用</option><option value="DISABLED">仅看停用</option>
                     </select>
                 </label>
             </div>
@@ -105,40 +227,19 @@
             <div class="agent-tool-groups" th:if="${!#lists.isEmpty(tools)}">
                 <section class="agent-tool-group" data-tool-group="LOCAL" th:if="${!#lists.isEmpty(localTools)}">
                     <div class="agent-tool-group-head">
-                        <div class="agent-tool-group-title">
-                            <span class="agent-tool-source-icon source-local" aria-hidden="true">L</span>
-                            <div>
-                                <h3>本地工具</h3>
-                                <p>由当前应用注册，承载 RAG、文档与产出等核心能力</p>
-                            </div>
-                        </div>
+                        <div class="agent-tool-group-title"><span class="agent-tool-source-icon source-local" aria-hidden="true">L</span><div><h3>本地工具</h3><p>应用内置的 RAG、文档与产出能力</p></div></div>
                         <span class="agent-tool-group-count"><strong th:text="${localToolCount}">0</strong> 个工具</span>
                     </div>
                     <div class="agent-tool-card-grid">
-                        <article th:each="tool : ${localTools}"
-                                 th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
-                                 class="agent-tool-card"
-                                 data-tool-card
-                                 data-source="LOCAL"
+                        <article th:each="tool : ${localTools}" th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
+                                 class="agent-tool-card" data-tool-card data-source="LOCAL"
                                  th:attr="data-status=${tool.enabled ? 'ENABLED' : 'DISABLED'},data-search-text=${tool.toolName + ' ' + (tool.description == null ? '' : tool.description)}">
-                            <div class="agent-tool-card-head">
-                                <span class="agent-tool-source-icon source-local" aria-hidden="true">L</span>
-                                <span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'">
-                                    <i aria-hidden="true"></i>
-                                    <span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span>
-                                </span>
-                            </div>
-                            <code class="agent-tool-name" th:text="${tool.toolName}" th:title="${tool.toolName}">tool_name</code>
+                            <div class="agent-tool-card-head"><span class="agent-tool-source-icon source-local" aria-hidden="true">L</span><span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'"><i></i><span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span></span></div>
+                            <code class="agent-tool-name" th:text="${tool.toolName}">tool_name</code>
                             <p class="agent-tool-description" th:text="${#strings.isEmpty(tool.description) ? '暂无工具说明' : tool.description}">工具描述</p>
-                            <div class="agent-tool-card-foot">
-                                <span>应用内注册</span>
-                                <form class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{toolName}/enabled(toolName=${tool.toolName})}" method="post">
-                                    <input type="hidden" name="enabled" th:value="${!tool.enabled}">
-                                    <button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'"
-                                            type="submit"
-                                            th:attr="aria-label=${tool.enabled ? '停用工具 ' + tool.toolName : '启用工具 ' + tool.toolName},aria-pressed=${tool.enabled}">
-                                        <span aria-hidden="true"></span>
-                                    </button>
+                            <div class="agent-tool-card-foot"><span th:text="${isAdmin ? '管理员全局控制' : '系统共享'}">系统共享</span>
+                                <form th:if="${isAdmin}" class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{name}/enabled(name=${tool.toolName})}" method="post">
+                                    <input type="hidden" name="enabled" th:value="${!tool.enabled}"><button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'" type="submit" th:attr="aria-pressed=${tool.enabled}"><span></span></button>
                                 </form>
                             </div>
                         </article>
@@ -147,40 +248,19 @@
 
                 <section class="agent-tool-group" data-tool-group="MCP" th:if="${!#lists.isEmpty(mcpTools)}">
                     <div class="agent-tool-group-head">
-                        <div class="agent-tool-group-title">
-                            <span class="agent-tool-source-icon source-mcp" aria-hidden="true">M</span>
-                            <div>
-                                <h3>MCP 工具</h3>
-                                <p>由外部 MCP Server 动态发现，扩展第三方平台能力</p>
-                            </div>
-                        </div>
-                        <span class="agent-tool-group-count"><strong th:text="${mcpToolCount}">0</strong> 个工具</span>
+                        <div class="agent-tool-group-title"><span class="agent-tool-source-icon source-mcp" aria-hidden="true">M</span><div><h3>系统共享 MCP</h3><p>由管理员在服务器侧配置并向所有用户提供</p></div></div>
+                        <span class="agent-tool-group-count"><strong th:text="${#lists.size(mcpTools)}">0</strong> 个工具</span>
                     </div>
                     <div class="agent-tool-card-grid">
-                        <article th:each="tool : ${mcpTools}"
-                                 th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
-                                 class="agent-tool-card"
-                                 data-tool-card
-                                 data-source="MCP"
+                        <article th:each="tool : ${mcpTools}" th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
+                                 class="agent-tool-card" data-tool-card data-source="MCP"
                                  th:attr="data-status=${tool.enabled ? 'ENABLED' : 'DISABLED'},data-search-text=${tool.toolName + ' ' + (tool.description == null ? '' : tool.description)}">
-                            <div class="agent-tool-card-head">
-                                <span class="agent-tool-source-icon source-mcp" aria-hidden="true">M</span>
-                                <span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'">
-                                    <i aria-hidden="true"></i>
-                                    <span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span>
-                                </span>
-                            </div>
-                            <code class="agent-tool-name" th:text="${tool.toolName}" th:title="${tool.toolName}">tool_name</code>
+                            <div class="agent-tool-card-head"><span class="agent-tool-source-icon source-mcp" aria-hidden="true">M</span><span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'"><i></i><span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span></span></div>
+                            <code class="agent-tool-name" th:text="${tool.toolName}">tool_name</code>
                             <p class="agent-tool-description" th:text="${#strings.isEmpty(tool.description) ? '暂无工具说明' : tool.description}">工具描述</p>
-                            <div class="agent-tool-card-foot">
-                                <span>MCP 动态发现</span>
-                                <form class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{toolName}/enabled(toolName=${tool.toolName})}" method="post">
-                                    <input type="hidden" name="enabled" th:value="${!tool.enabled}">
-                                    <button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'"
-                                            type="submit"
-                                            th:attr="aria-label=${tool.enabled ? '停用工具 ' + tool.toolName : '启用工具 ' + tool.toolName},aria-pressed=${tool.enabled}">
-                                        <span aria-hidden="true"></span>
-                                    </button>
+                            <div class="agent-tool-card-foot"><span>服务器侧共享</span>
+                                <form th:if="${isAdmin}" class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{name}/enabled(name=${tool.toolName})}" method="post">
+                                    <input type="hidden" name="enabled" th:value="${!tool.enabled}"><button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'" type="submit" th:attr="aria-pressed=${tool.enabled}"><span></span></button>
                                 </form>
                             </div>
                         </article>
@@ -188,63 +268,47 @@
                 </section>
 
                 <section class="agent-tool-group" data-tool-group="SYSTEM" th:if="${!#lists.isEmpty(systemTools)}">
-                    <div class="agent-tool-group-head">
-                        <div class="agent-tool-group-title">
-                            <span class="agent-tool-source-icon source-system" aria-hidden="true">S</span>
-                            <div>
-                                <h3>系统工具</h3>
-                                <p>为 Agent 运行与编排提供基础支持的系统能力</p>
-                            </div>
-                        </div>
-                        <span class="agent-tool-group-count"><strong th:text="${systemToolCount}">0</strong> 个工具</span>
-                    </div>
+                    <div class="agent-tool-group-head"><div class="agent-tool-group-title"><span class="agent-tool-source-icon source-system">S</span><div><h3>系统工具</h3><p>Agent 运行与编排的基础能力</p></div></div><span class="agent-tool-group-count"><strong th:text="${systemToolCount}">0</strong> 个工具</span></div>
                     <div class="agent-tool-card-grid">
-                        <article th:each="tool : ${systemTools}"
-                                 th:classappend="${!tool.enabled} ? ' is-disabled' : ''"
-                                 class="agent-tool-card"
-                                 data-tool-card
-                                 data-source="SYSTEM"
-                                 th:attr="data-status=${tool.enabled ? 'ENABLED' : 'DISABLED'},data-search-text=${tool.toolName + ' ' + (tool.description == null ? '' : tool.description)}">
-                            <div class="agent-tool-card-head">
-                                <span class="agent-tool-source-icon source-system" aria-hidden="true">S</span>
-                                <span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'">
-                                    <i aria-hidden="true"></i>
-                                    <span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span>
-                                </span>
-                            </div>
-                            <code class="agent-tool-name" th:text="${tool.toolName}" th:title="${tool.toolName}">tool_name</code>
-                            <p class="agent-tool-description" th:text="${#strings.isEmpty(tool.description) ? '暂无工具说明' : tool.description}">工具描述</p>
-                            <div class="agent-tool-card-foot">
-                                <span>系统内置</span>
-                                <form class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{toolName}/enabled(toolName=${tool.toolName})}" method="post">
-                                    <input type="hidden" name="enabled" th:value="${!tool.enabled}">
-                                    <button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'"
-                                            type="submit"
-                                            th:attr="aria-label=${tool.enabled ? '停用工具 ' + tool.toolName : '启用工具 ' + tool.toolName},aria-pressed=${tool.enabled}">
-                                        <span aria-hidden="true"></span>
-                                    </button>
-                                </form>
-                            </div>
+                        <article th:each="tool : ${systemTools}" th:classappend="${!tool.enabled} ? ' is-disabled' : ''" class="agent-tool-card" data-tool-card data-source="SYSTEM" th:attr="data-status=${tool.enabled ? 'ENABLED' : 'DISABLED'},data-search-text=${tool.toolName + ' ' + (tool.description == null ? '' : tool.description)}">
+                            <div class="agent-tool-card-head"><span class="agent-tool-source-icon source-system">S</span><span th:class="${tool.enabled} ? 'agent-tool-state is-enabled' : 'agent-tool-state is-disabled'"><i></i><span th:text="${tool.enabled} ? '已启用' : '已停用'">已启用</span></span></div>
+                            <code class="agent-tool-name" th:text="${tool.toolName}">tool_name</code><p class="agent-tool-description" th:text="${#strings.isEmpty(tool.description) ? '暂无工具说明' : tool.description}">工具描述</p>
+                            <div class="agent-tool-card-foot"><span>系统共享</span><form th:if="${isAdmin}" class="agent-tool-toggle-form" th:action="@{/agent/admin/tools/{name}/enabled(name=${tool.toolName})}" method="post"><input type="hidden" name="enabled" th:value="${!tool.enabled}"><button th:class="${tool.enabled} ? 'agent-tool-toggle is-on' : 'agent-tool-toggle'" type="submit" th:attr="aria-pressed=${tool.enabled}"><span></span></button></form></div>
                         </article>
                     </div>
                 </section>
             </div>
 
-            <div id="agentToolNoResults" class="agent-admin-empty agent-tool-no-results" hidden>
-                <strong>没有找到匹配的工具</strong>
-                <span>可以更换来源、状态，或清空搜索关键词后重试。</span>
-                <button id="resetToolFilters" class="btn btn-secondary btn-sm" type="button">重置筛选</button>
-            </div>
-
-            <div th:if="${#lists.isEmpty(tools)}" class="agent-admin-empty agent-tool-empty">
-                <span class="agent-tool-empty-icon" aria-hidden="true">＋</span>
-                <strong>暂未发现任何工具</strong>
-                <span>开启 MCP 后刷新发现，或确认本地 Tool Bean 已正常注册。</span>
-                <a class="btn btn-sm" href="/agent/admin">重新发现</a>
-            </div>
+            <div id="agentToolNoResults" class="agent-admin-empty agent-tool-no-results" hidden><strong>没有找到匹配的工具</strong><span>更换来源、状态或搜索词后重试。</span><button id="resetToolFilters" class="btn btn-secondary btn-sm" type="button">重置筛选</button></div>
         </section>
     </main>
 </div>
+
+<dialog id="credentialGuideDialog" class="mcp-guide-dialog" th:attr="data-auto-open=${!credentialVaultConfigured}">
+    <form method="dialog" class="mcp-guide-dialog-card">
+        <div class="mcp-guide-head"><div><p class="eyebrow">Credential Setup</p><h2>配置 MCP Token 加密主密钥</h2></div><button class="mcp-guide-close" value="cancel" aria-label="关闭">×</button></div>
+        <div th:if="${isAdmin}">
+            <p>主密钥由系统部署者生成一次，普通用户无需知道。它只用于加密用户提交的 MCP Token。</p>
+            <ol class="mcp-guide-steps">
+                <li><strong>在 PowerShell 生成 32 字节随机密钥</strong>
+                    <pre><code>$bytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+[Convert]::ToBase64String($bytes)</code></pre>
+                </li>
+                <li><strong>加入后端启动环境变量</strong>
+                    <pre><code>MCP_CREDENTIAL_ACTIVE_KEY_ID=v1
+MCP_CREDENTIAL_KEY_V1=上一步生成的Base64字符串</code></pre>
+                </li>
+                <li><strong>完全重启 Spring Boot</strong><span>IDEA：Run Configuration → Environment variables。不要把真实密钥提交到 Git。</span></li>
+            </ol>
+            <div class="mcp-guide-dev"><strong>仅本地 MCP 开发</strong><p>如需连接 localhost/http，可额外配置以下变量；生产环境保持 false。</p><pre><code>MCP_ALLOW_PRIVATE_NETWORKS=true
+MCP_ALLOW_INSECURE_HTTP=true</code></pre></div>
+        </div>
+        <div th:unless="${isAdmin}"><p>后端尚未配置 Token 加密主密钥。你仍可连接无需认证的 HTTPS MCP；Bearer Token 连接需要联系系统管理员完成后端配置。</p></div>
+        <div class="mcp-guide-status"><span>当前凭据后端</span><strong th:text="${credentialVaultBackend}">AES-256-GCM / PostgreSQL</strong><span th:text="${credentialVaultConfigured ? '已就绪' : '未配置'}">未配置</span></div>
+        <div class="mcp-guide-actions"><button class="btn" value="cancel">我知道了</button></div>
+    </form>
+</dialog>
 
 <script src="/agent-admin.js" defer></script>
 </body>
