@@ -52,14 +52,35 @@ public class AgentService {
         AgentSession session = sessionService.getOrCreateSession(userId, sessionId);
         AgentMessage userMessage = sessionService.saveMessage(session.getId(), "user",
                 imageContext == null ? safeQuestion : safeQuestion + "\n\n![用户上传图片](" + imageContext.webPath() + ")");
+        return executePrepared(userId, session.getId(), userMessage.getId(), safeQuestion, effectiveQuestion)
+                .onErrorResume(error -> {
+                    stepService.recordError(session.getId(), userMessage.getId(), error.getMessage());
+                    return Flux.just(
+                            reactAgentExecutor.terminalErrorEvent(userMessage.getId(), error.getMessage()),
+                            "Agent execution failed: " + error.getMessage(),
+                            "[DONE]");
+                });
+    }
+
+    /**
+     * Executes a request whose user message and durable run record already
+     * exist. The returned stream is owned by the background runner rather
+     * than by an HTTP connection, so browser navigation cannot cancel it.
+     */
+    public Flux<String> executePrepared(Long userId,
+                                        Long sessionId,
+                                        Long userMessageId,
+                                        String safeQuestion,
+                                        String effectiveQuestion) {
+        AgentSession session = sessionService.requireOwnedSession(userId, sessionId);
         AgentContextManager.ContextPack context = contextManager.build(
-                session, userMessage.getId(), effectiveQuestion);
+                session, userMessageId, effectiveQuestion);
         String contextualQuestion = context.contextualQuestion();
         List<Message> history = context.history();
 
         StringBuilder answer = new StringBuilder();
         return reactAgentExecutor
-                .executeStream(userId, session.getId(), userMessage.getId(), contextualQuestion, history)
+                .executeStream(userId, session.getId(), userMessageId, contextualQuestion, history)
                 .doOnNext(event -> {
                     String delta = reactAgentExecutor.answerDeltaText(event);
                     if (delta != null) {
@@ -83,16 +104,9 @@ public class AgentService {
                     if (!finalAnswer.isBlank()) {
                         sessionService.saveMessage(session.getId(), "assistant", finalAnswer);
                         memoryService.scheduleExtraction(
-                                userId, session.getId(), userMessage.getId(), safeQuestion, finalAnswer);
+                                userId, session.getId(), userMessageId, safeQuestion, finalAnswer);
                     }
                     return Flux.just("[DONE]");
-                }))
-                .onErrorResume(error -> {
-                    stepService.recordError(session.getId(), userMessage.getId(), error.getMessage());
-                    return Flux.just(
-                            reactAgentExecutor.terminalErrorEvent(userMessage.getId(), error.getMessage()),
-                            "Agent execution failed: " + error.getMessage(),
-                            "[DONE]");
-                });
+                }));
     }
 }

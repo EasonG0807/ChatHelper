@@ -33,6 +33,7 @@ class AgentServiceStreamingTest {
         String finalEvent = ReActAgentExecutor.ANSWER_FINAL_EVENT_PREFIX + "{\"markdown\":\"**完成**\"}";
 
         when(sessionService.getOrCreateSession(1L, 10L)).thenReturn(session);
+        when(sessionService.requireOwnedSession(1L, 10L)).thenReturn(session);
         when(sessionService.saveMessage(10L, "user", "问题")).thenReturn(userMessage);
         when(contextManager.build(session, 20L, "问题"))
                 .thenReturn(new AgentContextManager.ContextPack(List.of(), "问题", 10));

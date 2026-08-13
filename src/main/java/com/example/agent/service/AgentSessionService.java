@@ -5,6 +5,8 @@ import com.example.agent.entity.AgentSession;
 import com.example.agent.entity.AgentSessionStatus;
 import com.example.agent.repository.AgentMessageRepository;
 import com.example.agent.repository.AgentArtifactRepository;
+import com.example.agent.repository.AgentRunEventRepository;
+import com.example.agent.repository.AgentRunRepository;
 import com.example.agent.repository.AgentSessionRepository;
 import com.example.agent.repository.AgentStepRepository;
 import lombok.RequiredArgsConstructor;
@@ -25,6 +27,8 @@ public class AgentSessionService {
     private final AgentMessageRepository messageRepository;
     private final AgentStepRepository stepRepository;
     private final AgentArtifactRepository artifactRepository;
+    private final AgentRunRepository runRepository;
+    private final AgentRunEventRepository runEventRepository;
 
     public List<AgentSession> listActiveSessions(Long userId) {
         return sessionRepository.findByUserIdAndStatusOrderByUpdatedAtDesc(userId, AgentSessionStatus.ACTIVE);
@@ -67,6 +71,15 @@ public class AgentSessionService {
         return messageRepository.findBySessionIdOrderByIdAsc(sessionId);
     }
 
+    @Transactional(readOnly = true)
+    public AgentSession requireOwnedSession(Long userId, Long sessionId) {
+        if (userId == null || sessionId == null) {
+            throw sessionNotFound();
+        }
+        return sessionRepository.findByIdAndUserId(sessionId, userId)
+                .orElseThrow(this::sessionNotFound);
+    }
+
     @Transactional
     public AgentMessage saveMessage(Long sessionId, String role, String content) {
         AgentMessage message = new AgentMessage();
@@ -93,6 +106,8 @@ public class AgentSessionService {
     public void deleteSession(Long userId, Long sessionId) {
         AgentSession session = sessionRepository.findOwnedForUpdate(sessionId, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Agent session not found"));
+        ensureNoActiveRun(userId, sessionId);
+        deleteRunHistory(sessionId);
         messageRepository.deleteBySessionId(session.getId());
         stepRepository.deleteBySessionId(session.getId());
         artifactRepository.deleteBySessionId(session.getId());
@@ -103,12 +118,32 @@ public class AgentSessionService {
     public void clearSession(Long userId, Long sessionId) {
         AgentSession session = sessionRepository.findOwnedForUpdate(sessionId, userId)
                 .orElseThrow(() -> new IllegalArgumentException("Agent session not found"));
+        ensureNoActiveRun(userId, sessionId);
+        deleteRunHistory(sessionId);
         messageRepository.deleteBySessionId(session.getId());
         stepRepository.deleteBySessionId(session.getId());
         artifactRepository.deleteBySessionId(session.getId());
         session.setConversationSummary(null);
         session.setSummarizedMessageId(null);
         sessionRepository.save(session);
+    }
+
+    private void ensureNoActiveRun(Long userId, Long sessionId) {
+        if (runRepository.existsByUserIdAndSessionIdAndStatusIn(userId, sessionId,
+                List.of(com.example.agent.entity.AgentRunStatus.QUEUED,
+                        com.example.agent.entity.AgentRunStatus.RUNNING))) {
+            throw new AgentRunConflictException("任务执行期间不能清空或删除该对话。");
+        }
+    }
+
+    private void deleteRunHistory(Long sessionId) {
+        List<Long> runIds = runRepository.findBySessionIdOrderByCreatedAtAscIdAsc(sessionId).stream()
+                .map(com.example.agent.entity.AgentRun::getId)
+                .toList();
+        if (!runIds.isEmpty()) {
+            runEventRepository.deleteByRunIdIn(runIds);
+        }
+        runRepository.deleteBySessionId(sessionId);
     }
 
     private String normalizeSessionTitle(String title) {

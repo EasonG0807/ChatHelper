@@ -3,6 +3,8 @@ package com.example.agent.service;
 import com.example.agent.entity.AgentSession;
 import com.example.agent.repository.AgentArtifactRepository;
 import com.example.agent.repository.AgentMessageRepository;
+import com.example.agent.repository.AgentRunEventRepository;
+import com.example.agent.repository.AgentRunRepository;
 import com.example.agent.repository.AgentSessionRepository;
 import com.example.agent.repository.AgentStepRepository;
 import org.junit.jupiter.api.Test;
@@ -21,12 +23,15 @@ class AgentSessionServiceArtifactTest {
         AgentMessageRepository messageRepository = mock(AgentMessageRepository.class);
         AgentStepRepository stepRepository = mock(AgentStepRepository.class);
         AgentArtifactRepository artifactRepository = mock(AgentArtifactRepository.class);
+        AgentRunRepository runRepository = mock(AgentRunRepository.class);
+        AgentRunEventRepository runEventRepository = mock(AgentRunEventRepository.class);
         AgentSession session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);
         when(sessionRepository.findOwnedForUpdate(10L, 1L)).thenReturn(Optional.of(session));
         AgentSessionService service = new AgentSessionService(
-                sessionRepository, messageRepository, stepRepository, artifactRepository);
+                sessionRepository, messageRepository, stepRepository, artifactRepository,
+                runRepository, runEventRepository);
 
         service.clearSession(1L, 10L);
 
@@ -41,12 +46,15 @@ class AgentSessionServiceArtifactTest {
         AgentMessageRepository messageRepository = mock(AgentMessageRepository.class);
         AgentStepRepository stepRepository = mock(AgentStepRepository.class);
         AgentArtifactRepository artifactRepository = mock(AgentArtifactRepository.class);
+        AgentRunRepository runRepository = mock(AgentRunRepository.class);
+        AgentRunEventRepository runEventRepository = mock(AgentRunEventRepository.class);
         AgentSession session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);
         when(sessionRepository.findOwnedForUpdate(10L, 1L)).thenReturn(Optional.of(session));
         AgentSessionService service = new AgentSessionService(
-                sessionRepository, messageRepository, stepRepository, artifactRepository);
+                sessionRepository, messageRepository, stepRepository, artifactRepository,
+                runRepository, runEventRepository);
 
         service.deleteSession(1L, 10L);
 

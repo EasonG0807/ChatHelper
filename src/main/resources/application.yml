@@ -17,7 +17,7 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: ${SPRING_JPA_SHOW_SQL:false}
     database-platform: org.hibernate.dialect.PostgreSQLDialect
   elasticsearch:
     uris: ${ES_URIS:http://localhost:9200}
@@ -80,6 +80,11 @@ sentry:
 agent:
   admin:
     user-ids: ${AGENT_ADMIN_USER_IDS:1}
+  runs:
+    executor:
+      core-size: ${AGENT_RUN_EXECUTOR_CORE_SIZE:2}
+      max-size: ${AGENT_RUN_EXECUTOR_MAX_SIZE:6}
+      queue-capacity: ${AGENT_RUN_EXECUTOR_QUEUE_CAPACITY:100}
   mcp:
     credentials:
       # Keep business code behind McpCredentialVault. A future Vault implementation

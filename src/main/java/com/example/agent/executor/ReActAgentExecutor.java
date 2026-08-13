@@ -11,6 +11,7 @@ import com.example.agent.tool.react.ReactToolRegistry;
 import com.example.agent.tool.react.ToolExecutionContext;
 import com.example.agent.tool.react.ToolExecutionResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
@@ -326,6 +327,42 @@ public class ReActAgentExecutor {
 
     public String answerFinalMarkdown(String event) {
         return eventField(event, ANSWER_FINAL_EVENT_PREFIX, "markdown");
+    }
+
+    /**
+     * Coalesces consecutive answer-delta frames without changing their
+     * externally visible shape. The last source sequence/timestamp is kept so
+     * diagnostics still describe the newest frame represented by the batch.
+     */
+    public String mergeAnswerDeltaEvents(List<String> events) {
+        if (events == null || events.isEmpty()) {
+            return null;
+        }
+        ObjectNode merged = null;
+        StringBuilder text = new StringBuilder();
+        try {
+            for (String event : events) {
+                if (event == null || !event.startsWith(ANSWER_DELTA_EVENT_PREFIX)) {
+                    return null;
+                }
+                ObjectNode current = (ObjectNode) objectMapper.readTree(
+                        event.substring(ANSWER_DELTA_EVENT_PREFIX.length()));
+                if (merged == null) {
+                    merged = current.deepCopy();
+                }
+                text.append(current.path("text").asText(""));
+                if (current.has("sequence")) {
+                    merged.set("sequence", current.get("sequence"));
+                }
+                if (current.has("timestamp")) {
+                    merged.set("timestamp", current.get("timestamp"));
+                }
+            }
+            merged.put("text", text.toString());
+            return ANSWER_DELTA_EVENT_PREFIX + objectMapper.writeValueAsString(merged);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private void emitStep(FluxSink<String> sink, String phase, String tool, String status, String detail) {

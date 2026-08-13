@@ -39,10 +39,17 @@
 
             <div class="agent-session-list">
                 <div th:each="s : ${sessions}"
+                     th:with="runSummary=${sessionRunSummaries.get(s.id)}"
                      th:class="${s.id == activeSession.id} ? 'agent-session-item active' : 'agent-session-item'"
                      th:attr="data-session-id=${s.id},data-active=${s.id == activeSession.id}">
                     <a class="agent-session-link" th:href="@{/agent(sessionId=${s.id})}">
-                        <span class="agent-session-title" th:text="${s.title}">AI超级智能体</span>
+                        <span class="agent-session-title-row">
+                            <span class="agent-session-title" th:text="${s.title}">AI超级智能体</span>
+                            <span th:if="${runSummary != null and (runSummary.activeRunId != null or runSummary.unreadCount > 0)}"
+                                  th:classappend="${runSummary.activeRunId != null} ? ' is-running' : (${runSummary.failedUnread} ? ' is-error' : ' is-unread')"
+                                  th:text="${runSummary.activeRunId != null} ? '运行中' : ${runSummary.unreadCount}"
+                                  class="agent-session-run-badge">运行中</span>
+                        </span>
                         <small class="agent-session-updated"
                                th:text="${#temporals.format(s.updatedAt, 'MM-dd HH:mm')}">05-09 10:30</small>
                     </a>
@@ -347,11 +354,17 @@
 </dialog>
 
 <input type="hidden" id="agentSessionId" th:value="${activeSession.id}">
+<input type="hidden" id="agentActiveRunId" th:value="${activeRun == null ? '' : activeRun.id}">
+<input type="hidden" id="agentActiveRunMessageId" th:value="${activeRun == null ? '' : activeRun.userMessageId}">
+<input type="hidden" id="agentActiveRunQuestion" th:value="${activeRun == null ? '' : activeRun.question}">
 
 <script>
     marked.setOptions({ gfm: true, breaks: true });
     let agentEventSource = null;
     let agentStreamSequence = 0;
+    let activeAgentRunId = null;
+    let agentRunReconnectTimer = null;
+    let agentRunSummaryTimer = null;
     let selectedAgentImageFile = null;
     let artifactRefreshSequence = 0;
     const pendingArtifactDeleteIds = new Set();
@@ -372,10 +385,16 @@
         bindArtifactListActions();
         bindSessionListActions();
         hydrateAgentQuestionIndex();
-        refreshSteps();
+        const initialStepRefresh = refreshSteps();
         updateArtifactCount();
         scrollChatToBottom();
         document.getElementById("agentMemoryEditContent").addEventListener("input", updateMemoryContentCount);
+        refreshRunSummaries();
+        agentRunSummaryTimer = window.setInterval(refreshRunSummaries, 10000);
+        document.addEventListener("visibilitychange", function () {
+            if (document.visibilityState === "visible") refreshRunSummaries();
+        });
+        Promise.resolve(initialStepRefresh).finally(resumePersistedAgentRun);
     });
 
     function fillPrompt(text) {
@@ -576,141 +595,275 @@
         selectedAgentImageFile = null;
         scrollChatToBottom();
 
-        const streamSequence = ++agentStreamSequence;
-        if (agentEventSource) {
-            agentEventSource.close();
-            agentEventSource = null;
-        }
-
         const sessionId = document.getElementById("agentSessionId").value;
         const question = text || "请结合我上传的图片进行分析。";
-        const baselineStepIds = await loadStepIdSnapshot(sessionId);
-        if (streamSequence !== agentStreamSequence) {
-            markdownRenderer.cancel();
-            progressTracker.notice("请求已被新的任务替代。", "ERROR");
-            return;
-        }
-        const streamStartedAt = Date.now();
-        let url = `/agent/ask?sessionId=${sessionId}&question=${encodeURIComponent(question)}`;
-        if (imageContext && imageContext.id) {
-            url += `&imageContextId=${encodeURIComponent(imageContext.id)}`;
-        }
-        let eventSource;
         try {
-            eventSource = new EventSourcePolyfill(url);
+            const body = new URLSearchParams({ sessionId, question });
+            if (imageContext && imageContext.id) body.set("imageContextId", imageContext.id);
+            const response = await fetch("/agent/runs", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Accept": "application/json"
+                },
+                body
+            });
+            let run = {};
+            try {
+                run = await response.json();
+            } catch (ignored) {
+            }
+            if (response.status === 401) {
+                window.location.assign("/auth/login");
+                return;
+            }
+            if (!response.ok || !run.id) {
+                throw new Error(run.message || "任务提交失败，请稍后重试。");
+            }
+            userDiv.dataset.messageId = String(run.userMessageId);
+            agentQuestionByMessageId.set(String(run.userMessageId), question);
+            prepareLiveAgentStepRun(question, userDiv);
+            connectAgentRun({
+                runId: run.id,
+                sessionId,
+                question,
+                userMessageId: run.userMessageId,
+                userDiv,
+                progressTracker,
+                markdownRenderer,
+                afterSequence: 0
+            });
         } catch (error) {
             setAgentRunState("IDLE");
             markdownRenderer.cancel();
-            progressTracker.fail("任务连接创建失败，请稍后重试。");
-            return;
+            progressTracker.fail(error.message || "任务提交失败，请稍后重试。");
+            input.value = question;
         }
-        agentEventSource = eventSource;
+    }
+
+    function connectAgentRun(context) {
+        const streamSequence = ++agentStreamSequence;
+        activeAgentRunId = String(context.runId);
+        setAgentRunState("ACTIVE");
+        if (agentEventSource) agentEventSource.close();
+        if (agentRunReconnectTimer !== null) window.clearTimeout(agentRunReconnectTimer);
+
+        let eventSource = null;
+        let reconnectAttempts = 0;
+        let lastEventSequence = Math.max(0, Number(context.afterSequence) || 0);
         let full = "";
         const streamState = {
             runId: null,
             completed: false,
             sawFinal: false,
             businessError: false,
-            businessErrorDetail: "",
-            handlingDisconnect: false
+            businessErrorDetail: ""
         };
 
-        // Keep historical runs collapsed and append this question as a new,
-        // independently expandable call-chain group.
-        prepareLiveAgentStepRun(question, userDiv);
+        const openStream = () => {
+            if (streamSequence !== agentStreamSequence || streamState.completed) return;
+            const url = `/agent/runs/${encodeURIComponent(context.runId)}/events?after=${lastEventSequence}`;
+            try {
+                eventSource = new EventSourcePolyfill(url);
+            } catch (error) {
+                scheduleReconnect();
+                return;
+            }
+            agentEventSource = eventSource;
 
-        eventSource.onmessage = function (event) {
-            if (streamSequence !== agentStreamSequence) return;
-            if (event.data === "[DONE]") {
-                streamState.completed = true;
-                markdownRenderer.flush();
-                progressTracker.finish();
+            eventSource.onopen = function () {
+                reconnectAttempts = 0;
+            };
+
+            eventSource.onmessage = async function (event) {
+                if (streamSequence !== agentStreamSequence) return;
+                const eventSequence = Number(event.lastEventId);
+                if (Number.isFinite(eventSequence) && eventSequence > lastEventSequence) {
+                    lastEventSequence = eventSequence;
+                }
+                if (event.data === "[DONE]") {
+                    streamState.completed = true;
+                    context.markdownRenderer.flush();
+                    eventSource.close();
+                    if (agentEventSource === eventSource) agentEventSource = null;
+                    const run = await loadAgentRun(context.runId);
+                    if (run && run.status && run.status !== "SUCCEEDED") {
+                        context.progressTracker.fail(run.errorMessage || "任务执行失败。");
+                    } else {
+                        context.progressTracker.finish();
+                    }
+                    activeAgentRunId = null;
+                    setAgentRunState("IDLE");
+                    await markSessionRead(context.sessionId);
+                    refreshSteps();
+                    refreshArtifacts();
+                    refreshRunSummaries();
+                    if (document.getElementById("agentMemoryDialog").open) {
+                        window.setTimeout(refreshMemories, 1200);
+                    }
+                    return;
+                }
+                if (event.data.startsWith("@@HEARTBEAT@@")) {
+                    acceptRunEvent(streamState, parseStructuredEvent(event.data, "@@HEARTBEAT@@"));
+                    return;
+                }
+                if (event.data.startsWith("@@STEP@@")) {
+                    const step = parseStructuredEvent(event.data, "@@STEP@@");
+                    if (!step || !acceptRunEvent(streamState, step)) return;
+                    if (step.phase === "FINAL") streamState.sawFinal = true;
+                    if (step.phase === "ERROR") {
+                        streamState.businessError = true;
+                        streamState.businessErrorDetail = step.detail || "任务执行失败";
+                    }
+                    context.progressTracker.apply(step);
+                    appendLiveStep(step);
+                    if (step.phase === "TOOL_RESULT" && step.status === "SUCCESS") {
+                        if (step.artifact) upsertArtifact(step.artifact);
+                        else refreshArtifacts();
+                    }
+                    return;
+                }
+                if (event.data.startsWith("@@ANSWER_DELTA@@")) {
+                    const delta = parseStructuredEvent(event.data, "@@ANSWER_DELTA@@");
+                    if (!delta || !acceptRunEvent(streamState, delta)) return;
+                    const textDelta = typeof delta.text === "string" ? delta.text : "";
+                    full += textDelta;
+                    context.markdownRenderer.append(textDelta);
+                    return;
+                }
+                if (event.data.startsWith("@@ANSWER_FINAL@@")) {
+                    const finalAnswer = parseStructuredEvent(event.data, "@@ANSWER_FINAL@@");
+                    if (!finalAnswer || !acceptRunEvent(streamState, finalAnswer)) return;
+                    full = typeof finalAnswer.markdown === "string" ? finalAnswer.markdown : full;
+                    streamState.sawFinal = true;
+                    context.markdownRenderer.replace(full);
+                    return;
+                }
+                const legacyChunk = unescapeSseChunk(event.data);
+                full += legacyChunk;
+                context.markdownRenderer.append(legacyChunk);
+            };
+
+            eventSource.onerror = function () {
+                if (streamSequence !== agentStreamSequence || streamState.completed) {
+                    eventSource.close();
+                    return;
+                }
                 eventSource.close();
                 if (agentEventSource === eventSource) agentEventSource = null;
-                setAgentRunState("IDLE");
-                refreshSteps();
-                refreshArtifacts();
-                if (document.getElementById("agentMemoryDialog").open) {
-                    window.setTimeout(refreshMemories, 1200);
-                }
-                return;
-            }
-            if (event.data.startsWith("@@HEARTBEAT@@")) {
-                const heartbeat = parseStructuredEvent(event.data, "@@HEARTBEAT@@");
-                acceptRunEvent(streamState, heartbeat);
-                return;
-            }
-            if (event.data.startsWith("@@STEP@@")) {
-                const step = parseStructuredEvent(event.data, "@@STEP@@");
-                if (!step || !acceptRunEvent(streamState, step)) return;
-                if (step.phase === "FINAL") streamState.sawFinal = true;
-                if (step.phase === "ERROR") {
-                    streamState.businessError = true;
-                    streamState.businessErrorDetail = step.detail || "任务执行失败";
-                }
-                progressTracker.apply(step);
-                appendLiveStep(step);
-                if (step.phase === "TOOL_RESULT" && step.status === "SUCCESS") {
-                    if (step.artifact) {
-                        upsertArtifact(step.artifact);
-                    } else {
-                        refreshArtifacts();
-                    }
-                }
-                return;
-            }
-            if (event.data.startsWith("@@ANSWER_DELTA@@")) {
-                const delta = parseStructuredEvent(event.data, "@@ANSWER_DELTA@@");
-                if (!delta || !acceptRunEvent(streamState, delta)) return;
-                const textDelta = typeof delta.text === "string" ? delta.text : "";
-                full += textDelta;
-                markdownRenderer.append(textDelta);
-                return;
-            }
-            if (event.data.startsWith("@@ANSWER_FINAL@@")) {
-                const finalAnswer = parseStructuredEvent(event.data, "@@ANSWER_FINAL@@");
-                if (!finalAnswer || !acceptRunEvent(streamState, finalAnswer)) return;
-                full = typeof finalAnswer.markdown === "string" ? finalAnswer.markdown : full;
-                streamState.sawFinal = true;
-                markdownRenderer.replace(full);
-                return;
-            }
-
-            // Rolling-deploy compatibility for a server that still emits
-            // plain answer chunks.
-            const legacyChunk = unescapeSseChunk(event.data);
-            full += legacyChunk;
-            markdownRenderer.append(legacyChunk);
+                context.progressTracker.notice("连接暂时中断，正在重新连接后台任务…", "RUNNING");
+                scheduleReconnect();
+            };
         };
 
-        eventSource.onerror = async function () {
-            // EventSource reports a transport error both for a real network
-            // interruption and for some already-completed SSE responses. Never
-            // let a late onerror overwrite a run that has received [DONE], nor
-            // let an older stream affect a newer question.
-            if (streamState.completed || streamState.handlingDisconnect || streamSequence !== agentStreamSequence) {
-                eventSource.close();
-                return;
-            }
-            streamState.handlingDisconnect = true;
-            eventSource.close();
-            if (agentEventSource === eventSource) agentEventSource = null;
-            setAgentRunState("UNKNOWN");
-
-            if (!markdownRenderer.value() && !streamState.businessError) {
-                progressTracker.notice("连接中断，正在确认任务结果…", "RUNNING");
-            }
-            await reconcileInterruptedStream({
-                sessionId,
-                baselineStepIds,
-                streamStartedAt,
-                markdownRenderer,
-                progressTracker,
-                streamState,
-                streamSequence
-            });
+        const scheduleReconnect = () => {
+            if (streamSequence !== agentStreamSequence || streamState.completed) return;
+            reconnectAttempts += 1;
+            const delayMs = Math.min(5000, 500 * Math.pow(1.6, reconnectAttempts - 1));
+            agentRunReconnectTimer = window.setTimeout(openStream, delayMs);
         };
+
+        openStream();
     }
+
+    async function loadAgentRun(runId) {
+        try {
+            const response = await fetch(`/agent/runs/${encodeURIComponent(runId)}`, {
+                headers: { "Accept": "application/json" }
+            });
+            return response.ok ? await response.json() : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    async function markSessionRead(sessionId) {
+        try {
+            await fetch(`/agent/sessions/${encodeURIComponent(sessionId)}/read`, {
+                method: "POST",
+                headers: { "Accept": "application/json" }
+            });
+        } catch (error) {
+        }
+    }
+
+    function resumePersistedAgentRun() {
+        const runId = document.getElementById("agentActiveRunId").value;
+        const userMessageId = document.getElementById("agentActiveRunMessageId").value;
+        const question = document.getElementById("agentActiveRunQuestion").value || "本轮用户提问";
+        if (!runId || !userMessageId) return;
+
+        const userDiv = Array.from(document.querySelectorAll(".user-msg[data-message-id]"))
+            .find(item => item.dataset.messageId === String(userMessageId));
+        if (!userDiv) return;
+        const existingRun = Array.from(document.querySelectorAll("#agentStepList .agent-step-run"))
+            .find(item => item.dataset.messageId === String(userMessageId));
+        if (existingRun) existingRun.remove();
+
+        const aiDiv = document.createElement("div");
+        aiDiv.className = "msg ai-msg";
+        const aiBubble = document.createElement("div");
+        const runUi = createAgentRunUi(aiBubble);
+        const progressTracker = createProgressTracker(runUi);
+        const markdownRenderer = createMarkdownRenderer(runUi.answer);
+        progressTracker.notice("正在恢复后台任务进度…", "RUNNING");
+        aiDiv.appendChild(aiBubble);
+        userDiv.after(aiDiv);
+        prepareLiveAgentStepRun(question, userDiv);
+        connectAgentRun({
+            runId,
+            sessionId: document.getElementById("agentSessionId").value,
+            question,
+            userMessageId,
+            userDiv,
+            progressTracker,
+            markdownRenderer,
+            afterSequence: 0
+        });
+        scrollChatToBottom();
+    }
+
+    async function refreshRunSummaries() {
+        if (document.visibilityState === "hidden") return;
+        try {
+            const response = await fetch("/agent/runs/summary", { headers: { "Accept": "application/json" } });
+            if (!response.ok) return;
+            const summaries = await response.json();
+            const bySession = new Map((Array.isArray(summaries) ? summaries : [])
+                .map(summary => [String(summary.sessionId), summary]));
+            document.querySelectorAll(".agent-session-item[data-session-id]").forEach(item => {
+                renderSessionRunBadge(item, bySession.get(item.dataset.sessionId));
+            });
+        } catch (error) {
+        }
+    }
+
+    function renderSessionRunBadge(item, summary) {
+        const row = item.querySelector(".agent-session-title-row");
+        if (!row) return;
+        let badge = row.querySelector(".agent-session-run-badge");
+        const running = summary && summary.activeRunId != null;
+        const unreadCount = summary ? Number(summary.unreadCount) || 0 : 0;
+        if (!running && unreadCount <= 0) {
+            if (badge) badge.remove();
+            return;
+        }
+        if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "agent-session-run-badge";
+            row.appendChild(badge);
+        }
+        badge.className = "agent-session-run-badge " + (running
+            ? "is-running" : (summary.failedUnread ? "is-error" : "is-unread"));
+        badge.textContent = running ? "运行中" : String(unreadCount);
+        badge.title = running ? "任务正在后台执行" : `${unreadCount} 个任务结果未读`;
+    }
+
+    window.addEventListener("pagehide", function () {
+        if (agentEventSource) agentEventSource.close();
+        if (agentRunReconnectTimer !== null) window.clearTimeout(agentRunReconnectTimer);
+        if (agentRunSummaryTimer !== null) window.clearInterval(agentRunSummaryTimer);
+    });
 
     function createAgentRunUi(bubble) {
         bubble.className = "bubble ai-bubble agent-run";

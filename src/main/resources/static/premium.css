@@ -2703,6 +2703,65 @@ th { background: rgba(126,162,255,.22); color: #e0e9ff; }
   white-space: nowrap;
 }
 
+.agent-session-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.agent-session-title-row .agent-session-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-session-run-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  overflow: visible !important;
+  border: 1px solid rgba(98, 228, 255, .35);
+  border-radius: 999px;
+  background: rgba(98, 228, 255, .12);
+  color: #9bf0ff;
+  font-size: 9px;
+  font-weight: 850;
+  line-height: 1;
+  text-overflow: clip !important;
+}
+
+.agent-session-run-badge.is-running::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: #62e4ff;
+  box-shadow: 0 0 0 0 rgba(98, 228, 255, .5);
+  animation: agent-session-running-pulse 1.5s infinite;
+}
+
+.agent-session-run-badge.is-unread {
+  border-color: rgba(126, 162, 255, .4);
+  background: rgba(126, 162, 255, .18);
+  color: #c8d6ff;
+}
+
+.agent-session-run-badge.is-error {
+  border-color: rgba(255, 112, 133, .45);
+  background: rgba(255, 112, 133, .14);
+  color: #ffc2cc;
+}
+
+@keyframes agent-session-running-pulse {
+  70% { box-shadow: 0 0 0 5px rgba(98, 228, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(98, 228, 255, 0); }
+}
+
 .agent-session-link small {
   color: var(--muted);
 }

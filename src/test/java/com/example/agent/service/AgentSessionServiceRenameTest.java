@@ -3,6 +3,8 @@ package com.example.agent.service;
 import com.example.agent.entity.AgentSession;
 import com.example.agent.repository.AgentArtifactRepository;
 import com.example.agent.repository.AgentMessageRepository;
+import com.example.agent.repository.AgentRunEventRepository;
+import com.example.agent.repository.AgentRunRepository;
 import com.example.agent.repository.AgentSessionRepository;
 import com.example.agent.repository.AgentStepRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,7 +34,9 @@ class AgentSessionServiceRenameTest {
                 sessionRepository,
                 mock(AgentMessageRepository.class),
                 mock(AgentStepRepository.class),
-                mock(AgentArtifactRepository.class));
+                mock(AgentArtifactRepository.class),
+                mock(AgentRunRepository.class),
+                mock(AgentRunEventRepository.class));
         session = new AgentSession();
         session.setId(10L);
         session.setUserId(1L);

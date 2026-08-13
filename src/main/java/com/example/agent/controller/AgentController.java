@@ -10,6 +10,8 @@ import com.example.agent.entity.AgentToolSource;
 import com.example.agent.service.AgentService;
 import com.example.agent.service.AgentArtifactService;
 import com.example.agent.service.AgentMemoryService;
+import com.example.agent.service.AgentRunConflictException;
+import com.example.agent.service.AgentRunService;
 import com.example.agent.service.AgentSessionService;
 import com.example.agent.service.AgentStepService;
 import com.example.agent.service.AgentToolManagementService;
@@ -64,6 +66,7 @@ public class AgentController {
     private final AgentWorkspaceService workspaceService;
     private final McpConnectionService mcpConnectionService;
     private final McpCsrfTokenService mcpCsrfTokenService;
+    private final AgentRunService runService;
 
     @Value("${agent.admin.user-ids:1}")
     private String adminUserIds;
@@ -77,11 +80,14 @@ public class AgentController {
 
         toolRegistry.syncToolConfigs();
         AgentSession activeSession = sessionService.getOrCreateSession(userId, sessionId);
+        runService.markSessionRead(userId, activeSession.getId());
         List<AgentMessage> messages = sessionService.listMessages(activeSession.getId());
         List<AgentStep> steps = stepService.listSteps(activeSession.getId());
         model.addAttribute("activeSession", activeSession);
         model.addAttribute("skills", skillLibraryService.listActiveSkills(userId));
         model.addAttribute("sessions", sessionService.listActiveSessions(userId));
+        model.addAttribute("sessionRunSummaries", runService.summaries(userId));
+        model.addAttribute("activeRun", runService.latestActive(userId, activeSession.getId()).orElse(null));
         model.addAttribute("messages", messages);
         model.addAttribute("steps", steps);
         model.addAttribute("stepGroups", groupStepsByMessage(messages, steps));
@@ -106,10 +112,15 @@ public class AgentController {
         if (userId == null) {
             return "redirect:/auth/login";
         }
+        if (runService.hasActiveRun(userId, sessionId)) {
+            return "redirect:/agent?sessionId=" + sessionId;
+        }
         try {
             memoryService.clearSessionMemories(userId, sessionId);
             sessionService.deleteSession(userId, sessionId);
             workspaceService.deleteWorkspace(userId, sessionId);
+        } catch (AgentRunConflictException running) {
+            return "redirect:/agent?sessionId=" + sessionId;
         } catch (IllegalArgumentException ignored) {
             // Session already gone or not owned by this user; the list below reflects reality.
         }
@@ -372,10 +383,14 @@ public class AgentController {
         if (userId == null) {
             return ResponseEntity.status(401).body("Please login first.");
         }
-        sessionService.clearSession(userId, sessionId);
-        memoryService.clearSessionMemories(userId, sessionId);
-        workspaceService.deleteWorkspace(userId, sessionId);
-        return ResponseEntity.ok("Agent session cleared.");
+        try {
+            sessionService.clearSession(userId, sessionId);
+            memoryService.clearSessionMemories(userId, sessionId);
+            workspaceService.deleteWorkspace(userId, sessionId);
+            return ResponseEntity.ok("Agent session cleared.");
+        } catch (AgentRunConflictException running) {
+            return ResponseEntity.status(409).body(running.getMessage());
+        }
     }
 
     private boolean isAdmin(Long userId) {
